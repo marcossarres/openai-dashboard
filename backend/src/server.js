@@ -8,7 +8,7 @@ import dotenv from 'dotenv';
 import swaggerJsdoc from 'swagger-jsdoc';
 import swaggerUi from 'swagger-ui-express';
 import { CostExplorerClient, GetCostAndUsageCommand } from '@aws-sdk/client-cost-explorer';
-import { fromIni } from '@aws-sdk/credential-providers';
+import { fromIni, fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { SecretsManagerClient, GetSecretValueCommand, PutSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -24,7 +24,10 @@ const PORT = process.env.PORT || 3001;
 
 const SECRETS_MANAGER_SECRET_NAME = 'sarrescost/backend/credentials';
 const SECRETS_MANAGER_REGION = 'us-east-1';
-const secretsClient = new SecretsManagerClient({ region: SECRETS_MANAGER_REGION });
+const secretsClient = new SecretsManagerClient({
+  region: SECRETS_MANAGER_REGION,
+  credentials: fromNodeProviderChain({ profile: process.env.AWS_PROFILE || 'aws-cloudy' }),
+});
 
 // Mutable key — can be updated at runtime via /api/config/key
 let apiKey = process.env.OPENAI_API_KEY || '';
@@ -90,10 +93,10 @@ async function loadFromSecretsManager() {
   try {
     const res = await secretsClient.send(new GetSecretValueCommand({ SecretId: SECRETS_MANAGER_SECRET_NAME }));
     const secret = JSON.parse(res.SecretString || '{}');
-    if (secret.OPENAI_API_KEY) apiKey = secret.OPENAI_API_KEY;
-    if (secret.AWS_ACCESS_KEY_ID) awsAccessKeyId = secret.AWS_ACCESS_KEY_ID;
-    if (secret.AWS_SECRET_ACCESS_KEY) awsSecretAccessKey = secret.AWS_SECRET_ACCESS_KEY;
-    if (secret.AWS_REGION) awsRegion = secret.AWS_REGION;
+    if (secret.openaiApiKey) apiKey = secret.openaiApiKey;
+    if (secret.awsAccessKeyId) awsAccessKeyId = secret.awsAccessKeyId;
+    if (secret.awsSecretAccessKey) awsSecretAccessKey = secret.awsSecretAccessKey;
+    if (secret.awsRegion) awsRegion = secret.awsRegion;
     console.log('[secrets] Loaded credentials from Secrets Manager.');
   } catch (err) {
     console.warn('[secrets] Could not load from Secrets Manager, using .env fallback:', err.message);
@@ -102,10 +105,10 @@ async function loadFromSecretsManager() {
 
 async function persistToSecretsManager() {
   const payload = JSON.stringify({
-    OPENAI_API_KEY: apiKey,
-    AWS_ACCESS_KEY_ID: awsAccessKeyId,
-    AWS_SECRET_ACCESS_KEY: awsSecretAccessKey,
-    AWS_REGION: awsRegion,
+    openaiApiKey: apiKey,
+    awsAccessKeyId,
+    awsSecretAccessKey,
+    awsRegion,
   });
   try {
     await secretsClient.send(new PutSecretValueCommand({
