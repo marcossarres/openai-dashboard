@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
+import { getApiBaseUrl, setApiBaseUrl } from '../api.js';
 
 function OpenAITab({ keyPreview, onSaved, onClose }) {
   const [key, setKey] = useState('');
@@ -190,6 +191,58 @@ function AwsTab({ onClose }) {
   );
 }
 
+function ConnectionTab({ onClose }) {
+  const [url, setUrl] = useState(getApiBaseUrl);
+  const [saved, setSaved] = useState(false);
+
+  function handleSave(e) {
+    e.preventDefault();
+    setApiBaseUrl(url);
+    setSaved(true);
+    setTimeout(onClose, 1000);
+  }
+
+  function handleClear() {
+    setUrl('');
+    setApiBaseUrl('');
+    setSaved(true);
+    setTimeout(onClose, 1000);
+  }
+
+  return (
+    <form onSubmit={handleSave} className="px-6 py-5 flex flex-col gap-4">
+      <div className="flex flex-col gap-1.5">
+        <label className="text-xs text-[#666] font-medium uppercase tracking-wider">API Base URL</label>
+        <input
+          type="text"
+          value={url}
+          onChange={(e) => { setUrl(e.target.value); setSaved(false); }}
+          placeholder="http://localhost:3001"
+          className="w-full bg-[#111] border border-[#333] focus:border-[#888] rounded-lg px-4 py-2.5 text-sm text-gray-200 font-mono outline-none transition-colors"
+          autoFocus
+        />
+        <p className="text-[#444] text-xs">
+          Include host and port, e.g. <span className="font-mono text-[#555]">http://localhost:3001</span>. Leave empty to use relative paths (default proxy).
+        </p>
+      </div>
+
+      {saved && <div className="bg-emerald-950 border border-emerald-800 rounded-lg px-4 py-2.5 text-emerald-400 text-sm">Saved!</div>}
+
+      <div className="flex gap-3 pt-1">
+        <button type="button" onClick={handleClear} className="bg-[#1c1c1c] border border-[#333] text-[#555] hover:text-gray-300 rounded-lg py-2.5 text-sm transition-colors px-4">
+          Reset
+        </button>
+        <button type="button" onClick={onClose} className="flex-1 bg-[#1c1c1c] border border-[#333] text-gray-400 hover:text-gray-200 rounded-lg py-2.5 text-sm transition-colors">
+          Cancel
+        </button>
+        <button type="submit" className="flex-1 bg-[#333] hover:bg-[#3a3a3a] text-gray-200 font-semibold rounded-lg py-2.5 text-sm transition-colors">
+          Save
+        </button>
+      </div>
+    </form>
+  );
+}
+
 export default function ApiKeyModal({ isOpen, onClose, keyPreview, onSaved }) {
   const [tab, setTab] = useState('openai');
 
@@ -228,12 +281,17 @@ export default function ApiKeyModal({ isOpen, onClose, keyPreview, onSaved }) {
           >
             AWS
           </button>
+          <button
+            onClick={() => setTab('connection')}
+            className={`flex-1 py-3 text-sm font-medium transition-colors ${tab === 'connection' ? 'text-gray-300 border-b-2 border-gray-500' : 'text-[#555] hover:text-gray-300'}`}
+          >
+            Connection
+          </button>
         </div>
 
-        {tab === 'openai'
-          ? <OpenAITab keyPreview={keyPreview} onSaved={onSaved} onClose={onClose} />
-          : <AwsTab onClose={onClose} />
-        }
+        {tab === 'openai' && <OpenAITab keyPreview={keyPreview} onSaved={onSaved} onClose={onClose} />}
+        {tab === 'aws' && <AwsTab onClose={onClose} />}
+        {tab === 'connection' && <ConnectionTab onClose={onClose} />}
       </div>
     </div>
   );

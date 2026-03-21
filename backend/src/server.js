@@ -9,6 +9,7 @@ import swaggerJsdoc from 'swagger-jsdoc';
 import swaggerUi from 'swagger-ui-express';
 import { CostExplorerClient, GetCostAndUsageCommand } from '@aws-sdk/client-cost-explorer';
 import { fromIni } from '@aws-sdk/credential-providers';
+import { SecretsManagerClient, GetSecretValueCommand, PutSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -20,6 +21,10 @@ dotenv.config({ path: ENV_PATH });
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+const SECRETS_MANAGER_SECRET_NAME = 'sarrescost/backend/credentials';
+const SECRETS_MANAGER_REGION = 'us-east-1';
+const secretsClient = new SecretsManagerClient({ region: SECRETS_MANAGER_REGION });
 
 // Mutable key — can be updated at runtime via /api/config/key
 let apiKey = process.env.OPENAI_API_KEY || '';
@@ -81,6 +86,37 @@ function awsCredentials() {
   return null;
 }
 
+async function loadFromSecretsManager() {
+  try {
+    const res = await secretsClient.send(new GetSecretValueCommand({ SecretId: SECRETS_MANAGER_SECRET_NAME }));
+    const secret = JSON.parse(res.SecretString || '{}');
+    if (secret.OPENAI_API_KEY) apiKey = secret.OPENAI_API_KEY;
+    if (secret.AWS_ACCESS_KEY_ID) awsAccessKeyId = secret.AWS_ACCESS_KEY_ID;
+    if (secret.AWS_SECRET_ACCESS_KEY) awsSecretAccessKey = secret.AWS_SECRET_ACCESS_KEY;
+    if (secret.AWS_REGION) awsRegion = secret.AWS_REGION;
+    console.log('[secrets] Loaded credentials from Secrets Manager.');
+  } catch (err) {
+    console.warn('[secrets] Could not load from Secrets Manager, using .env fallback:', err.message);
+  }
+}
+
+async function persistToSecretsManager() {
+  const payload = JSON.stringify({
+    OPENAI_API_KEY: apiKey,
+    AWS_ACCESS_KEY_ID: awsAccessKeyId,
+    AWS_SECRET_ACCESS_KEY: awsSecretAccessKey,
+    AWS_REGION: awsRegion,
+  });
+  try {
+    await secretsClient.send(new PutSecretValueCommand({
+      SecretId: SECRETS_MANAGER_SECRET_NAME,
+      SecretString: payload,
+    }));
+  } catch (err) {
+    console.warn('[secrets] Could not persist to Secrets Manager:', err.message);
+  }
+}
+
 function getAwsClientConfig() {
   const creds = awsCredentials();
   if (creds) {
@@ -132,7 +168,7 @@ const swaggerSpec = swaggerJsdoc({
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 
-app.use(cors({ origin: 'http://localhost:5173', methods: ['GET', 'POST'] }));
+app.use(cors({ origin: true, methods: ['GET', 'POST'] }));
 app.use(express.json());
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
@@ -204,11 +240,10 @@ app.post('/api/config/key', (req, res) => {
   }
   const trimmed = key.trim();
   apiKey = trimmed;
-  try {
-    persistKeyToEnv(trimmed);
-  } catch (err) {
+  try { persistKeyToEnv(trimmed); } catch (err) {
     console.warn('[config] Could not persist key to .env:', err.message);
   }
+  persistToSecretsManager();
   res.json({ ok: true, keyPreview: maskKey(trimmed) });
 });
 
@@ -443,11 +478,10 @@ app.post('/api/aws/config/credentials', (req, res) => {
   awsAccessKeyId = accessKeyId.trim();
   awsSecretAccessKey = secretAccessKey.trim();
   awsRegion = region.trim();
-  try {
-    persistAwsToEnv(awsAccessKeyId, awsSecretAccessKey, awsRegion);
-  } catch (err) {
+  try { persistAwsToEnv(awsAccessKeyId, awsSecretAccessKey, awsRegion); } catch (err) {
     console.warn('[aws config] Could not persist credentials to .env:', err.message);
   }
+  persistToSecretsManager();
   res.json({ ok: true, accessKeyPreview: maskAwsKey(awsAccessKeyId), region: awsRegion });
 });
 
@@ -524,7 +558,9 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: err.message || 'Internal server error' });
 });
 
-app.listen(PORT, () => {
-  console.log(`Backend running at http://localhost:${PORT}`);
-  if (!apiKey) console.warn('WARNING: No API key set. Open the dashboard and use Settings to configure your key.');
+loadFromSecretsManager().then(() => {
+  app.listen(PORT, () => {
+    console.log(`Backend running at http://localhost:${PORT}`);
+    if (!apiKey) console.warn('WARNING: No API key set. Open the dashboard and use Settings to configure your key.');
+  });
 });
