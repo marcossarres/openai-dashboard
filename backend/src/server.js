@@ -164,7 +164,7 @@ const swaggerSpec = swaggerJsdoc({
       version: '1.0.0',
       description: 'Backend API for the Marcos OpenAI usage dashboard',
     },
-    servers: [{ url: `http://localhost:${PORT}` }],
+    servers: [],
   },
   apis: [__filename],
 });
@@ -173,7 +173,14 @@ const swaggerSpec = swaggerJsdoc({
 
 app.use(cors({ origin: true, methods: ['GET', 'POST'] }));
 app.use(express.json());
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+
+app.get('/api-docs.json', (req, res) => {
+  const proto = req.headers['x-forwarded-proto'] || req.protocol;
+  const host = req.headers['x-forwarded-host'] || req.get('host');
+  res.json({ ...swaggerSpec, servers: [{ url: `${proto}://${host}` }] });
+});
+
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(null, { swaggerUrl: '/api-docs.json' }));
 
 // ── Config routes ─────────────────────────────────────────────────────────────
 
