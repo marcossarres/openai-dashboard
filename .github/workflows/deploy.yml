@@ -35,6 +35,13 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Ensure ECR repositories exist
+        run: |
+          for REPO in $BACKEND_IMAGE $FRONTEND_IMAGE; do
+            aws ecr describe-repositories --repository-names $REPO --region $AWS_REGION \
+              || aws ecr create-repository --repository-name $REPO --region $AWS_REGION
+          done
+
       - name: Build & push backend image
         id: build-backend
         working-directory: backend
