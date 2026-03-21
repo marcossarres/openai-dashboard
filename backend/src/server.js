@@ -8,8 +8,7 @@ import dotenv from 'dotenv';
 import swaggerJsdoc from 'swagger-jsdoc';
 import swaggerUi from 'swagger-ui-express';
 import { CostExplorerClient, GetCostAndUsageCommand } from '@aws-sdk/client-cost-explorer';
-import { fromIni, fromNodeProviderChain } from '@aws-sdk/credential-providers';
-import { SecretsManagerClient, GetSecretValueCommand, PutSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import { fromIni } from '@aws-sdk/credential-providers';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -21,13 +20,6 @@ dotenv.config({ path: ENV_PATH });
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-
-const SECRETS_MANAGER_SECRET_NAME = 'sarrescost/backend/credentials';
-const SECRETS_MANAGER_REGION = 'us-east-1';
-const secretsClient = new SecretsManagerClient({
-  region: SECRETS_MANAGER_REGION,
-  credentials: fromNodeProviderChain({ profile: process.env.AWS_PROFILE || 'aws-cloudy' }),
-});
 
 // Mutable key — can be updated at runtime via /api/config/key
 let apiKey = process.env.OPENAI_API_KEY || '';
@@ -87,37 +79,6 @@ function awsCredentials() {
     return { accessKeyId: awsAccessKeyId, secretAccessKey: awsSecretAccessKey };
   }
   return null;
-}
-
-async function loadFromSecretsManager() {
-  try {
-    const res = await secretsClient.send(new GetSecretValueCommand({ SecretId: SECRETS_MANAGER_SECRET_NAME }));
-    const secret = JSON.parse(res.SecretString || '{}');
-    if (secret.openaiApiKey) apiKey = secret.openaiApiKey;
-    if (secret.awsAccessKeyId) awsAccessKeyId = secret.awsAccessKeyId;
-    if (secret.awsSecretAccessKey) awsSecretAccessKey = secret.awsSecretAccessKey;
-    if (secret.awsRegion) awsRegion = secret.awsRegion;
-    console.log('[secrets] Loaded credentials from Secrets Manager.');
-  } catch (err) {
-    console.warn('[secrets] Could not load from Secrets Manager, using .env fallback:', err.message);
-  }
-}
-
-async function persistToSecretsManager() {
-  const payload = JSON.stringify({
-    openaiApiKey: apiKey,
-    awsAccessKeyId,
-    awsSecretAccessKey,
-    awsRegion,
-  });
-  try {
-    await secretsClient.send(new PutSecretValueCommand({
-      SecretId: SECRETS_MANAGER_SECRET_NAME,
-      SecretString: payload,
-    }));
-  } catch (err) {
-    console.warn('[secrets] Could not persist to Secrets Manager:', err.message);
-  }
 }
 
 function getAwsClientConfig() {
@@ -253,7 +214,6 @@ app.post('/api/config/key', (req, res) => {
   try { persistKeyToEnv(trimmed); } catch (err) {
     console.warn('[config] Could not persist key to .env:', err.message);
   }
-  persistToSecretsManager();
   res.json({ ok: true, keyPreview: maskKey(trimmed) });
 });
 
@@ -491,7 +451,6 @@ app.post('/api/aws/config/credentials', (req, res) => {
   try { persistAwsToEnv(awsAccessKeyId, awsSecretAccessKey, awsRegion); } catch (err) {
     console.warn('[aws config] Could not persist credentials to .env:', err.message);
   }
-  persistToSecretsManager();
   res.json({ ok: true, accessKeyPreview: maskAwsKey(awsAccessKeyId), region: awsRegion });
 });
 
@@ -568,9 +527,7 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: err.message || 'Internal server error' });
 });
 
-loadFromSecretsManager().then(() => {
-  app.listen(PORT, () => {
-    console.log(`Backend running at http://localhost:${PORT}`);
-    if (!apiKey) console.warn('WARNING: No API key set. Open the dashboard and use Settings to configure your key.');
-  });
+app.listen(PORT, () => {
+  console.log(`Backend running at http://localhost:${PORT}`);
+  if (!apiKey) console.warn('WARNING: No API key set. Open the dashboard and use Settings to configure your key.');
 });
