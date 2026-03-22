@@ -514,6 +514,10 @@ app.get('/api/aws/costs', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ── Health check ──────────────────────────────────────────────────────────────
+
+app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+
 // ── Error handling ────────────────────────────────────────────────────────────
 
 app.use((_req, res) => res.status(404).json({ error: 'Route not found' }));
