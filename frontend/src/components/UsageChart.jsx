@@ -18,17 +18,17 @@ function buildChartData(costsData) {
   });
 }
 
-const CustomTooltip = ({ active, payload, label }) => {
+const CustomTooltip = ({ active, payload, label, accentColor }) => {
   if (!active || !payload?.length) return null;
   return (
     <div className="bg-[#1c1c1c] border border-[#333] rounded-md px-3.5 py-2.5 text-sm text-gray-200">
       <p className="m-0 mb-1 text-[#888]">{label}</p>
-      <p className="m-0 text-[#00d4aa] font-semibold">${payload[0].value.toFixed(4)}</p>
+      <p className="m-0 font-semibold" style={{ color: accentColor }}>${payload[0].value.toFixed(4)}</p>
     </div>
   );
 };
 
-export default function UsageChart({ costsData }) {
+export default function UsageChart({ costsData, accentColor = '#00d4aa', gradientId = 'openai' }) {
   const data = buildChartData(costsData);
 
   if (!data.length) {
@@ -41,14 +41,16 @@ export default function UsageChart({ costsData }) {
 
   const tickInterval = Math.max(1, Math.floor(data.length / 8)) - 1;
 
+  const gradId = `costGrad-${gradientId}`;
+
   return (
     <div className="bg-[#141414] border border-[#222] rounded-xl px-4 pt-6 pb-4">
       <ResponsiveContainer width="100%" height={280}>
         <AreaChart data={data} margin={{ top: 4, right: 16, left: 0, bottom: 0 }}>
           <defs>
-            <linearGradient id="costGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="#00d4aa" stopOpacity={0.25} />
-              <stop offset="95%" stopColor="#00d4aa" stopOpacity={0} />
+            <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor={accentColor} stopOpacity={0.25} />
+              <stop offset="95%" stopColor={accentColor} stopOpacity={0} />
             </linearGradient>
           </defs>
           <CartesianGrid strokeDasharray="3 3" stroke="#1e1e1e" vertical={false} />
@@ -66,15 +68,15 @@ export default function UsageChart({ costsData }) {
             tickFormatter={(v) => `$${v}`}
             width={52}
           />
-          <Tooltip content={<CustomTooltip />} cursor={{ stroke: '#333' }} />
+          <Tooltip content={<CustomTooltip accentColor={accentColor} />} cursor={{ stroke: '#333' }} />
           <Area
             type="monotone"
             dataKey="cost"
-            stroke="#00d4aa"
+            stroke={accentColor}
             strokeWidth={2}
-            fill="url(#costGrad)"
+            fill={`url(#${gradId})`}
             dot={false}
-            activeDot={{ r: 4, fill: '#00d4aa', stroke: '#0f0f0f', strokeWidth: 2 }}
+            activeDot={{ r: 4, fill: accentColor, stroke: '#0f0f0f', strokeWidth: 2 }}
           />
         </AreaChart>
       </ResponsiveContainer>

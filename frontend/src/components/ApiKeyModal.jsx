@@ -75,6 +75,105 @@ function OpenAITab({ keyPreview, onSaved, onClose }) {
   );
 }
 
+function ClaudeTab({ status, onSaved, onClose }) {
+  const [key, setKey] = useState('');
+  const [showKey, setShowKey] = useState(false);
+  const [orgId, setOrgId] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const [success, setSuccess] = useState(false);
+
+  async function handleSave(e) {
+    e.preventDefault();
+    if (!key.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const payload = { key: key.trim() };
+      if (orgId?.trim()) payload.orgId = orgId.trim();
+      const res = await axios.post('/api/claude/config/key', payload);
+      setSuccess(true);
+      onSaved({
+        hasKey: true,
+        keyPreview: res.data.keyPreview,
+        hasOrgId: Boolean(res.data.orgPreview),
+        orgPreview: res.data.orgPreview,
+      });
+      setTimeout(onClose, 1000);
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Failed to save Claude credentials');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSave} className="px-6 py-5 flex flex-col gap-4">
+      <div className="bg-[#1a1a1a] border border-[#262626] rounded-lg px-4 py-3 text-sm flex items-center justify-between">
+        <span className="text-[#555]">Current key</span>
+        <span className="text-gray-400 font-mono text-xs">
+          {status?.keyPreview || <span className="text-red-500">Not set</span>}
+        </span>
+      </div>
+      <div className="flex items-center justify-between text-xs text-[#666]">
+        <span>Org ID</span>
+        <span className="font-mono text-[#555]">{status?.orgPreview || '—'}</span>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <label className="text-xs text-[#666] font-medium uppercase tracking-wider">Admin API Key</label>
+        <div className="relative">
+          <input
+            type={showKey ? 'text' : 'password'}
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            placeholder="sk-ant-admin-..."
+            className="w-full bg-[#111] border border-[#333] focus:border-[#c084fc] rounded-lg px-4 py-2.5 text-sm text-gray-200 font-mono outline-none transition-colors pr-16"
+            autoFocus
+          />
+          <button
+            type="button"
+            onClick={() => setShowKey((s) => !s)}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-[#555] hover:text-gray-300 text-xs transition-colors"
+          >
+            {showKey ? 'Hide' : 'Show'}
+          </button>
+        </div>
+        <p className="text-[#444] text-xs">
+          Requires an Anthropic Admin API key. Create one at <span className="font-mono text-[#666]">platform.claude.com/settings/admin-keys</span>.
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <label className="text-xs text-[#666] font-medium uppercase tracking-wider">Organization ID (optional)</label>
+        <input
+          type="text"
+          value={orgId}
+          onChange={(e) => setOrgId(e.target.value)}
+          placeholder="org_..."
+          className="w-full bg-[#111] border border-[#333] focus:border-[#c084fc] rounded-lg px-4 py-2.5 text-sm text-gray-200 font-mono outline-none transition-colors"
+        />
+        <p className="text-[#444] text-xs">Only needed for multi-org setups. Leave blank to use your Admin key's default organization.</p>
+      </div>
+
+      {error && <div className="bg-red-950 border border-red-800 rounded-lg px-4 py-2.5 text-red-400 text-sm">{error}</div>}
+      {success && <div className="bg-emerald-950 border border-emerald-800 rounded-lg px-4 py-2.5 text-emerald-400 text-sm">Claude credentials saved!</div>}
+
+      <div className="flex gap-3 pt-1">
+        <button type="button" onClick={onClose} className="flex-1 bg-[#1c1c1c] border border-[#333] text-gray-400 hover:text-gray-200 rounded-lg py-2.5 text-sm transition-colors">
+          Cancel
+        </button>
+        <button
+          type="submit"
+          disabled={saving || !key.trim()}
+          className="flex-1 bg-gradient-to-r from-[#c084fc] to-[#7c3aed] text-[#0f0f0f] font-semibold rounded-lg py-2.5 text-sm disabled:opacity-50 disabled:cursor-not-allowed transition-opacity hover:opacity-90"
+        >
+          {saving ? 'Saving…' : 'Save Claude Key'}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 function AwsTab({ onClose }) {
   const [status, setStatus] = useState(null);
   const [accessKeyId, setAccessKeyId] = useState('');
@@ -243,7 +342,7 @@ function ConnectionTab({ onClose }) {
   );
 }
 
-export default function ApiKeyModal({ isOpen, onClose, keyPreview, onSaved }) {
+export default function ApiKeyModal({ isOpen, onClose, openaiKeyPreview, onOpenAISaved, claudeStatus, onClaudeSaved }) {
   const [tab, setTab] = useState('openai');
 
   useEffect(() => {
@@ -276,6 +375,12 @@ export default function ApiKeyModal({ isOpen, onClose, keyPreview, onSaved }) {
             OpenAI
           </button>
           <button
+            onClick={() => setTab('claude')}
+            className={`flex-1 py-3 text-sm font-medium transition-colors ${tab === 'claude' ? 'text-[#c084fc] border-b-2 border-[#c084fc]' : 'text-[#555] hover:text-gray-300'}`}
+          >
+            Claude
+          </button>
+          <button
             onClick={() => setTab('aws')}
             className={`flex-1 py-3 text-sm font-medium transition-colors ${tab === 'aws' ? 'text-[#f59e0b] border-b-2 border-[#f59e0b]' : 'text-[#555] hover:text-gray-300'}`}
           >
@@ -289,7 +394,8 @@ export default function ApiKeyModal({ isOpen, onClose, keyPreview, onSaved }) {
           </button>
         </div>
 
-        {tab === 'openai' && <OpenAITab keyPreview={keyPreview} onSaved={onSaved} onClose={onClose} />}
+        {tab === 'openai' && <OpenAITab keyPreview={openaiKeyPreview} onSaved={onOpenAISaved} onClose={onClose} />}
+        {tab === 'claude' && <ClaudeTab status={claudeStatus} onSaved={onClaudeSaved} onClose={onClose} />}
         {tab === 'aws' && <AwsTab onClose={onClose} />}
         {tab === 'connection' && <ConnectionTab onClose={onClose} />}
       </div>

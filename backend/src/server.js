@@ -23,6 +23,8 @@ const PORT = process.env.PORT || 3001;
 
 // Mutable key — can be updated at runtime via /api/config/key
 let apiKey = process.env.OPENAI_API_KEY || '';
+let claudeApiKey = process.env.ANTHROPIC_API_KEY || '';
+let claudeOrgId = process.env.ANTHROPIC_ORG_ID || '';
 
 // Mutable AWS credentials — can be updated at runtime via /api/aws/config/credentials
 let awsAccessKeyId = process.env.AWS_ACCESS_KEY_ID || '';
@@ -37,6 +39,17 @@ function openaiHeaders() {
   return { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
 }
 
+function claudeHeaders() {
+  if (!claudeApiKey) throw new Error('ANTHROPIC_API_KEY is not configured. Use the Settings panel to add your Claude Admin key.');
+  const headers = {
+    'x-api-key': claudeApiKey,
+    'anthropic-version': '2023-06-01',
+    'User-Agent': 'MarcosCostDashboard/1.0.0 (+https://platform.claude.com)',
+  };
+  if (claudeOrgId) headers['anthropic-org-id'] = claudeOrgId;
+  return headers;
+}
+
 function dateToUnix(dateStr) {
   return Math.floor(new Date(dateStr).getTime() / 1000);
 }
@@ -46,12 +59,36 @@ function maskKey(key) {
   return key.slice(0, 14) + '...' + key.slice(-4);
 }
 
+function maskOrgId(orgId) {
+  if (!orgId || orgId.length < 8) return null;
+  return orgId.slice(0, 4) + '...' + orgId.slice(-3);
+}
+
 function persistKeyToEnv(key) {
   let contents = existsSync(ENV_PATH) ? readFileSync(ENV_PATH, 'utf8') : '';
   if (/^OPENAI_API_KEY=.*/m.test(contents)) {
     contents = contents.replace(/^OPENAI_API_KEY=.*/m, `OPENAI_API_KEY=${key}`);
   } else {
     contents = contents.trimEnd() + `\nOPENAI_API_KEY=${key}\n`;
+  }
+  writeFileSync(ENV_PATH, contents, 'utf8');
+}
+
+function persistClaudeConfigToEnv(key, orgId) {
+  let contents = existsSync(ENV_PATH) ? readFileSync(ENV_PATH, 'utf8') : '';
+  if (key) {
+    if (/^ANTHROPIC_API_KEY=.*/m.test(contents)) {
+      contents = contents.replace(/^ANTHROPIC_API_KEY=.*/m, `ANTHROPIC_API_KEY=${key}`);
+    } else {
+      contents = contents.trimEnd() + `\nANTHROPIC_API_KEY=${key}\n`;
+    }
+  }
+  if (orgId !== undefined) {
+    if (/^ANTHROPIC_ORG_ID=.*/m.test(contents)) {
+      contents = contents.replace(/^ANTHROPIC_ORG_ID=.*/m, `ANTHROPIC_ORG_ID=${orgId}`);
+    } else {
+      contents = contents.trimEnd() + `\nANTHROPIC_ORG_ID=${orgId}\n`;
+    }
   }
   writeFileSync(ENV_PATH, contents, 'utf8');
 }
@@ -113,6 +150,72 @@ function transformCosts(buckets) {
     return { timestamp: bucket.start_time, line_items };
   });
   return { total_usage: totalCents, daily_costs };
+}
+
+async function fetchClaudeCostPages(startIso, endIso, limit = 31) {
+  const buckets = [];
+  let nextPage;
+  const cappedLimit = Math.min(Math.max(1, limit), 31);
+  do {
+    const params = {
+      starting_at: startIso,
+      ending_at: endIso,
+      bucket_width: '1d',
+      'group_by[]': ['description', 'workspace_id'],
+      limit: cappedLimit,
+    };
+    if (nextPage) params.page = nextPage;
+    const resp = await axios.get('https://api.anthropic.com/v1/organizations/cost_report', {
+      headers: claudeHeaders(),
+      params,
+    });
+    buckets.push(...(resp.data.data || []));
+    nextPage = resp.data.has_more ? resp.data.next_page : null;
+  } while (nextPage);
+  return buckets;
+}
+
+function toClaudeIso(dateStr, offsetDays = 0) {
+  const date = dateStr ? new Date(`${dateStr}T00:00:00Z`) : new Date();
+  if (Number.isNaN(date.getTime())) throw new Error('Invalid date range provided.');
+  date.setUTCDate(date.getUTCDate() + offsetDays);
+  return date.toISOString().split('.')[0] + 'Z';
+}
+
+function parseCostAmount(raw) {
+  if (raw == null) return 0;
+  if (typeof raw === 'number') return Math.round(raw);
+  const num = Number(raw);
+  return Number.isFinite(num) ? Math.round(num) : 0;
+}
+
+function transformClaudeCosts(buckets) {
+  let totalCents = 0;
+  const daily_costs = [];
+
+  for (const bucket of buckets) {
+    const timestamp = Math.floor(new Date(bucket.starting_at).getTime() / 1000);
+    const line_items = [];
+    for (const result of bucket.results || []) {
+      const cost = parseCostAmount(result.amount);
+      if (!cost) continue;
+      totalCents += cost;
+      const description = result.description || null;
+      const workspace = result.workspace_id ? `Workspace ${result.workspace_id.slice(0, 6)}` : null;
+      const name = description || workspace || 'Uncategorized';
+      line_items.push({
+        name,
+        cost,
+        currency: result.currency || 'USD',
+        workspace_id: result.workspace_id || null,
+      });
+    }
+    if (line_items.length) {
+      daily_costs.push({ timestamp, line_items });
+    }
+  }
+
+  return { total_cost: totalCents, daily_costs };
 }
 
 // ── Swagger ───────────────────────────────────────────────────────────────────
@@ -215,6 +318,33 @@ app.post('/api/config/key', (req, res) => {
     console.warn('[config] Could not persist key to .env:', err.message);
   }
   res.json({ ok: true, keyPreview: maskKey(trimmed) });
+});
+
+app.get('/api/claude/config/status', (_req, res) => {
+  res.json({
+    hasKey: Boolean(claudeApiKey),
+    keyPreview: maskKey(claudeApiKey),
+    hasOrgId: Boolean(claudeOrgId),
+    orgPreview: maskOrgId(claudeOrgId),
+  });
+});
+
+app.post('/api/claude/config/key', (req, res) => {
+  const { key, orgId } = req.body;
+  if (!key || typeof key !== 'string' || !key.trim()) {
+    return res.status(400).json({ error: 'key is required' });
+  }
+  const trimmedKey = key.trim();
+  claudeApiKey = trimmedKey;
+  claudeOrgId = typeof orgId === 'string' ? orgId.trim() : claudeOrgId;
+  try { persistClaudeConfigToEnv(trimmedKey, claudeOrgId || ''); } catch (err) {
+    console.warn('[claude config] Could not persist config to .env:', err.message);
+  }
+  res.json({
+    ok: true,
+    keyPreview: maskKey(claudeApiKey),
+    orgPreview: maskOrgId(claudeOrgId),
+  });
 });
 
 // ── Data routes ───────────────────────────────────────────────────────────────
@@ -511,6 +641,22 @@ app.get('/api/aws/costs', async (req, res, next) => {
     });
 
     res.json({ total_cost: totalCents, daily_costs });
+  } catch (err) { next(err); }
+});
+
+app.get('/api/claude/costs', async (req, res, next) => {
+  try {
+    const { start_date, end_date } = req.query;
+    const today = new Date().toISOString().slice(0, 10);
+    const defaultStart = new Date(Date.now() - 30 * 86400 * 1000).toISOString().slice(0, 10);
+    const start = start_date || defaultStart;
+    const end = end_date || today;
+    const startIso = toClaudeIso(start, 0);
+    const endIso = toClaudeIso(end, 1); // exclusive end boundary
+    const spanMs = new Date(endIso).getTime() - new Date(startIso).getTime();
+    const totalDays = Math.max(1, Math.ceil(spanMs / (86400 * 1000)));
+    const buckets = await fetchClaudeCostPages(startIso, endIso, totalDays);
+    res.json(transformClaudeCosts(buckets));
   } catch (err) { next(err); }
 });
 

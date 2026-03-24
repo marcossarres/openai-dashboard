@@ -6,6 +6,7 @@ import ModelBreakdown from './components/ModelBreakdown.jsx';
 import AwsCostSummary from './components/AwsCostSummary.jsx';
 import AwsUsageChart from './components/AwsUsageChart.jsx';
 import AwsServiceBreakdown from './components/AwsServiceBreakdown.jsx';
+import ClaudeCostSummary from './components/ClaudeCostSummary.jsx';
 import ApiKeyModal from './components/ApiKeyModal.jsx';
 
 function toDateString(date) {
@@ -24,7 +25,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('openai');
   const [dateRange, setDateRange] = useState(defaultRange);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [keyPreview, setKeyPreview] = useState(null);
+  const [openaiKeyPreview, setOpenaiKeyPreview] = useState(null);
+  const [claudeStatus, setClaudeStatus] = useState({ hasKey: false, keyPreview: null, hasOrgId: false, orgPreview: null });
 
   // OpenAI state
   const [costsData, setCostsData] = useState(null);
@@ -40,11 +42,40 @@ export default function App() {
   const [awsError, setAwsError] = useState(null);
   const [awsSynced, setAwsSynced] = useState(false);
 
+  // Claude state
+  const [claudeData, setClaudeData] = useState(null);
+  const [claudeLoading, setClaudeLoading] = useState(false);
+  const [claudeError, setClaudeError] = useState(null);
+  const [claudeSynced, setClaudeSynced] = useState(false);
+
   useEffect(() => {
-    axios.get('/api/config/status').then((res) => {
-      setKeyPreview(res.data.keyPreview);
-      if (!res.data.hasKey) setSettingsOpen(true);
-    });
+    let cancelled = false;
+    (async () => {
+      let shouldOpen = false;
+      try {
+        const res = await axios.get('/api/config/status');
+        if (!cancelled) {
+          setOpenaiKeyPreview(res.data.keyPreview);
+          if (!res.data.hasKey) shouldOpen = true;
+        }
+      } catch (err) {
+        console.warn('Failed to load OpenAI status', err.message);
+      }
+
+      try {
+        const res = await axios.get('/api/claude/config/status');
+        if (!cancelled) {
+          setClaudeStatus(res.data);
+          if (!res.data.hasKey) shouldOpen = true;
+        }
+      } catch (err) {
+        console.warn('Failed to load Claude status', err.message);
+      }
+
+      if (shouldOpen && !cancelled) setSettingsOpen(true);
+    })();
+
+    return () => { cancelled = true; };
   }, []);
 
   const fetchOpenAI = useCallback(async () => {
@@ -83,23 +114,42 @@ export default function App() {
     }
   }, [dateRange.start, dateRange.end]);
 
+  const fetchClaude = useCallback(async () => {
+    setClaudeLoading(true);
+    setClaudeError(null);
+    try {
+      const params = { start_date: dateRange.start, end_date: dateRange.end };
+      const res = await axios.get('/api/claude/costs', { params });
+      setClaudeData(res.data);
+      setClaudeSynced(true);
+    } catch (err) {
+      setClaudeError(err.response?.data?.error || err.message || 'Failed to fetch Claude cost data.');
+    } finally {
+      setClaudeLoading(false);
+    }
+  }, [dateRange.start, dateRange.end]);
+
   function handleDateChange(field, value) {
     setDateRange((prev) => ({ ...prev, [field]: value }));
   }
 
   const isOpenAI = activeTab === 'openai';
-  const loading = isOpenAI ? openaiLoading : awsLoading;
-  const handleSync = isOpenAI ? fetchOpenAI : fetchAWS;
-  const accentColor = isOpenAI ? '#00d4aa' : '#f59e0b';
-  const accentDark = isOpenAI ? '#00a882' : '#d97706';
+  const isAWS = activeTab === 'aws';
+  const isClaude = activeTab === 'claude';
+  const loading = isOpenAI ? openaiLoading : isAWS ? awsLoading : claudeLoading;
+  const handleSync = isOpenAI ? fetchOpenAI : isAWS ? fetchAWS : fetchClaude;
+  const accentColor = isOpenAI ? '#00d4aa' : isAWS ? '#f59e0b' : '#8b5cf6';
+  const accentDark = isOpenAI ? '#00a882' : isAWS ? '#d97706' : '#7c3aed';
 
   return (
     <div className="min-h-screen bg-[#0f0f0f] text-gray-200">
       <ApiKeyModal
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}
-        keyPreview={keyPreview}
-        onSaved={setKeyPreview}
+        openaiKeyPreview={openaiKeyPreview}
+        onOpenAISaved={setOpenaiKeyPreview}
+        claudeStatus={claudeStatus}
+        onClaudeSaved={(next) => setClaudeStatus((prev) => ({ ...prev, ...next }))}
       />
 
       {/* Header */}
@@ -133,11 +183,19 @@ export default function App() {
             )}
           </div>
         )}
-        {!isOpenAI && awsSynced && awsData?.total_cost != null && (
+        {isAWS && awsSynced && awsData?.total_cost != null && (
           <div className="flex items-center gap-4 border-r border-[#2a2a2a] pr-4">
             <div className="flex items-center gap-1.5 text-sm">
               <span className="text-[#555]">AWS Spent</span>
               <span className="text-[#f59e0b] font-semibold">${(awsData.total_cost / 100).toFixed(2)}</span>
+            </div>
+          </div>
+        )}
+        {isClaude && claudeSynced && claudeData?.total_cost != null && (
+          <div className="flex items-center gap-4 border-r border-[#2a2a2a] pr-4">
+            <div className="flex items-center gap-1.5 text-sm">
+              <span className="text-[#555]">Claude Spent</span>
+              <span className="text-[#c4b5fd] font-semibold">${(claudeData.total_cost / 100).toFixed(2)}</span>
             </div>
           </div>
         )}
@@ -192,10 +250,18 @@ export default function App() {
           <button
             onClick={() => setActiveTab('aws')}
             className={`px-6 py-3.5 text-sm font-medium border-b-2 transition-colors ${
-              !isOpenAI ? 'text-[#f59e0b] border-[#f59e0b]' : 'text-[#555] border-transparent hover:text-gray-300'
+              isAWS ? 'text-[#f59e0b] border-[#f59e0b]' : 'text-[#555] border-transparent hover:text-gray-300'
             }`}
           >
             AWS
+          </button>
+          <button
+            onClick={() => setActiveTab('claude')}
+            className={`px-6 py-3.5 text-sm font-medium border-b-2 transition-colors ${
+              isClaude ? 'text-[#c084fc] border-[#c084fc]' : 'text-[#555] border-transparent hover:text-gray-300'
+            }`}
+          >
+            Claude
           </button>
         </div>
       </div>
@@ -220,8 +286,8 @@ export default function App() {
               <div className="flex flex-col items-center justify-center py-24 gap-3 text-[#444] text-sm">
                 <span className="text-4xl">📊</span>
                 <p className="m-0">Press <strong className="text-[#00d4aa]">Sync</strong> to load your OpenAI usage data.</p>
-                {keyPreview
-                  ? <p className="m-0 text-xs text-[#333]">Key: <span className="font-mono text-[#555]">{keyPreview}</span></p>
+                {openaiKeyPreview
+                  ? <p className="m-0 text-xs text-[#333]">Key: <span className="font-mono text-[#555]">{openaiKeyPreview}</span></p>
                   : <button onClick={() => setSettingsOpen(true)} className="mt-2 text-[#00d4aa] text-xs underline underline-offset-2 hover:opacity-80">No key configured — click to set up</button>
                 }
               </div>
@@ -254,7 +320,7 @@ export default function App() {
         )}
 
         {/* AWS Tab */}
-        {!isOpenAI && (
+        {isAWS && (
           <>
             {awsError && (
               <div className="bg-red-950 border border-red-800 rounded-lg px-5 py-4 text-red-400 text-sm mb-6 flex gap-2 items-start">
@@ -297,6 +363,59 @@ export default function App() {
                 )}
                 {awsSynced && !awsData?.daily_costs?.length && !awsError && (
                   <div className="text-center text-[#444] text-sm py-16">No AWS cost data found for the selected period.</div>
+                )}
+              </>
+            )}
+          </>
+        )}
+
+        {/* Claude Tab */}
+        {isClaude && (
+          <>
+            {claudeError && (
+              <div className="bg-red-950 border border-red-800 rounded-lg px-5 py-4 text-red-400 text-sm mb-6 flex gap-2 items-start">
+                <span className="font-semibold shrink-0">Error:</span><span>{claudeError}</span>
+              </div>
+            )}
+            {claudeLoading ? (
+              <div className="flex flex-col items-center justify-center py-24 gap-4 text-[#555] text-sm">
+                <div className="w-10 h-10 border-[3px] border-[#222] border-t-[#c084fc] rounded-full spinner" />
+                <span>Fetching Claude cost data…</span>
+              </div>
+            ) : !claudeSynced ? (
+              <div className="flex flex-col items-center justify-center py-24 gap-3 text-[#444] text-sm">
+                <span className="text-4xl">🤖</span>
+                <p className="m-0">Press <strong className="text-[#c084fc]">Sync</strong> to pull Claude console costs.</p>
+                {claudeStatus?.keyPreview
+                  ? <p className="m-0 text-xs text-[#333]">Key: <span className="font-mono text-[#555]">{claudeStatus.keyPreview}</span></p>
+                  : (
+                    <button onClick={() => setSettingsOpen(true)} className="mt-2 text-[#c084fc] text-xs underline underline-offset-2 hover:opacity-80">
+                      No Claude Admin key configured — click to set up
+                    </button>
+                  )}
+              </div>
+            ) : (
+              <>
+                {claudeData && (
+                  <section className="mb-8">
+                    <p className="text-xs font-semibold text-[#555] uppercase tracking-widest mb-3">Summary</p>
+                    <ClaudeCostSummary claudeData={claudeData} />
+                  </section>
+                )}
+                {claudeData?.daily_costs?.length > 0 && (
+                  <section className="mb-8">
+                    <p className="text-xs font-semibold text-[#555] uppercase tracking-widest mb-3">Daily Cost Over Time</p>
+                    <UsageChart costsData={claudeData} accentColor="#c084fc" gradientId="claude" />
+                  </section>
+                )}
+                {claudeData?.daily_costs?.length > 0 && (
+                  <section className="mb-8">
+                    <p className="text-xs font-semibold text-[#555] uppercase tracking-widest mb-3">Cost by Line Item</p>
+                    <ModelBreakdown costsData={claudeData} accentColor="#c084fc" />
+                  </section>
+                )}
+                {claudeSynced && !claudeData?.daily_costs?.length && !claudeError && (
+                  <div className="text-center text-[#444] text-sm py-16">No Claude billing data found for the selected period.</div>
                 )}
               </>
             )}

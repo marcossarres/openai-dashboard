@@ -32,18 +32,18 @@ function truncate(str, max = 20) {
   return str.length > max ? str.slice(0, max) + '…' : str;
 }
 
-const CustomTooltip = ({ active, payload }) => {
+const CustomTooltip = ({ active, payload, accentColor }) => {
   if (!active || !payload?.length) return null;
   const { model, cost } = payload[0].payload;
   return (
     <div className="bg-[#1c1c1c] border border-[#333] rounded-md px-3.5 py-2.5 text-sm text-gray-200 max-w-[240px]">
       <p className="m-0 mb-1 text-[#888] break-words">{model}</p>
-      <p className="m-0 text-[#00d4aa] font-semibold">${cost.toFixed(4)}</p>
+      <p className="m-0 font-semibold" style={{ color: accentColor }}>${cost.toFixed(4)}</p>
     </div>
   );
 };
 
-export default function ModelBreakdown({ costsData }) {
+export default function ModelBreakdown({ costsData, accentColor = '#00d4aa' }) {
   const data = aggregateByModel(costsData);
 
   if (!data.length) {
@@ -77,7 +77,7 @@ export default function ModelBreakdown({ costsData }) {
             tickFormatter={(v) => `$${v}`}
             width={52}
           />
-          <Tooltip content={<CustomTooltip />} cursor={{ fill: '#1c1c1c' }} />
+          <Tooltip content={<CustomTooltip accentColor={accentColor} />} cursor={{ fill: '#1c1c1c' }} />
           <Bar dataKey="cost" radius={[4, 4, 0, 0]}>
             {chartData.map((_, index) => (
               <Cell key={index} fill={PALETTE[index % PALETTE.length]} fillOpacity={0.85} />
