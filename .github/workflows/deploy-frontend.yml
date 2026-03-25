@@ -47,5 +47,4 @@ jobs:
         run: |
           aws s3 sync frontend/dist "s3://$S3_BUCKET" \
             --delete \
-            --cache-control "public, max-age=300" \
-            --acl public-read
+            --cache-control "public, max-age=300"
