@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
-import axios from 'axios';
+import { apiClient } from './api.js';
 import CostSummary from './components/CostSummary.jsx';
 import UsageChart from './components/UsageChart.jsx';
 import ModelBreakdown from './components/ModelBreakdown.jsx';
@@ -53,7 +53,7 @@ export default function App() {
     (async () => {
       let shouldOpen = false;
       try {
-        const res = await axios.get('/api/config/status');
+        const res = await apiClient.get('/api/config/status');
         if (!cancelled) {
           setOpenaiKeyPreview(res.data.keyPreview);
           if (!res.data.hasKey) shouldOpen = true;
@@ -63,7 +63,7 @@ export default function App() {
       }
 
       try {
-        const res = await axios.get('/api/claude/config/status');
+        const res = await apiClient.get('/api/claude/config/status');
         if (!cancelled) {
           setClaudeStatus(res.data);
           if (!res.data.hasKey) shouldOpen = true;
@@ -84,9 +84,9 @@ export default function App() {
     try {
       const params = { start_date: dateRange.start, end_date: dateRange.end };
       const [costsRes, subRes, accountRes] = await Promise.all([
-        axios.get('/api/costs', { params }),
-        axios.get('/api/subscription'),
-        axios.get('/api/account'),
+        apiClient.get('/api/costs', { params }),
+        apiClient.get('/api/subscription'),
+        apiClient.get('/api/account'),
       ]);
       setCostsData(costsRes.data);
       setSubscription(subRes.data);
@@ -104,7 +104,7 @@ export default function App() {
     setAwsError(null);
     try {
       const params = { start_date: dateRange.start, end_date: dateRange.end };
-      const res = await axios.get('/api/aws/costs', { params });
+      const res = await apiClient.get('/api/aws/costs', { params });
       setAwsData(res.data);
       setAwsSynced(true);
     } catch (err) {
@@ -119,7 +119,7 @@ export default function App() {
     setClaudeError(null);
     try {
       const params = { start_date: dateRange.start, end_date: dateRange.end };
-      const res = await axios.get('/api/claude/costs', { params });
+      const res = await apiClient.get('/api/claude/costs', { params });
       setClaudeData(res.data);
       setClaudeSynced(true);
     } catch (err) {

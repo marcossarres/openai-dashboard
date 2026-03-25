@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
-import axios from 'axios';
-import { getApiBaseUrl, setApiBaseUrl } from '../api.js';
+import { apiClient, getApiBaseUrl, setApiBaseUrl } from '../api.js';
 
 function OpenAITab({ keyPreview, onSaved, onClose }) {
   const [key, setKey] = useState('');
@@ -15,7 +14,7 @@ function OpenAITab({ keyPreview, onSaved, onClose }) {
     setSaving(true);
     setError(null);
     try {
-      const res = await axios.post('/api/config/key', { key: key.trim() });
+      const res = await apiClient.post('/api/config/key', { key: key.trim() });
       setSuccess(true);
       onSaved(res.data.keyPreview);
       setTimeout(onClose, 1000);
@@ -91,7 +90,7 @@ function ClaudeTab({ status, onSaved, onClose }) {
     try {
       const payload = { key: key.trim() };
       if (orgId?.trim()) payload.orgId = orgId.trim();
-      const res = await axios.post('/api/claude/config/key', payload);
+      const res = await apiClient.post('/api/claude/config/key', payload);
       setSuccess(true);
       onSaved({
         hasKey: true,
@@ -185,7 +184,7 @@ function AwsTab({ onClose }) {
   const [success, setSuccess] = useState(false);
 
   useEffect(() => {
-    axios.get('/api/aws/config/status').then((res) => {
+    apiClient.get('/api/aws/config/status').then((res) => {
       setStatus(res.data);
       if (res.data.region) setRegion(res.data.region);
     }).catch(() => {});
@@ -197,7 +196,7 @@ function AwsTab({ onClose }) {
     setSaving(true);
     setError(null);
     try {
-      const res = await axios.post('/api/aws/config/credentials', {
+      const res = await apiClient.post('/api/aws/config/credentials', {
         accessKeyId: accessKeyId.trim(),
         secretAccessKey: secretAccessKey.trim(),
         region: region.trim() || 'us-east-1',
