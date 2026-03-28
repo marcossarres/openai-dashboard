@@ -21,6 +21,12 @@ dotenv.config({ path: ENV_PATH });
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+const githubRepoOwner = process.env.GITHUB_REPO_OWNER || 'marcossarres';
+const githubRepoName = process.env.GITHUB_REPO_NAME || 'openai-dashboard';
+const githubWorkflowFile = process.env.GITHUB_VERSION_WORKFLOW || 'deploy-frontend.yml';
+const githubToken = process.env.GITHUB_VERSION_TOKEN || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+const versionCacheTtlMs = Number(process.env.HEALTH_VERSION_CACHE_MS || 60_000);
+
 // Mutable key — can be updated at runtime via /api/config/key
 let apiKey = process.env.OPENAI_API_KEY || '';
 let claudeApiKey = process.env.ANTHROPIC_API_KEY || '';
@@ -662,7 +668,39 @@ app.get('/api/claude/costs', async (req, res, next) => {
 
 // ── Health check ──────────────────────────────────────────────────────────────
 
-app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+let cachedBackendVersion = 1;
+let lastVersionFetchTs = 0;
+
+async function resolveBackendVersion() {
+  const now = Date.now();
+  const cacheFresh = now - lastVersionFetchTs < versionCacheTtlMs;
+  if (cacheFresh && cachedBackendVersion) return cachedBackendVersion;
+
+  const apiUrl = `https://api.github.com/repos/${githubRepoOwner}/${githubRepoName}/actions/workflows/${githubWorkflowFile}/runs`;
+  const headers = {
+    'User-Agent': 'openai-dashboard-backend/1.0.0',
+    Accept: 'application/vnd.github+json',
+  };
+  if (githubToken) headers.Authorization = `Bearer ${githubToken}`;
+
+  try {
+    const resp = await axios.get(apiUrl, { params: { status: 'success', per_page: 1 }, headers });
+    const totalCount = Number(resp.data?.total_count ?? 0);
+    const version = Math.max(1, Number.isFinite(totalCount) ? totalCount : 1);
+    cachedBackendVersion = version;
+    lastVersionFetchTs = now;
+    return version;
+  } catch (err) {
+    console.warn('[Health] Unable to fetch workflow run count from GitHub:', err.message);
+    if (cachedBackendVersion) return cachedBackendVersion;
+    return 1;
+  }
+}
+
+app.get('/health', async (_req, res) => {
+  const version = await resolveBackendVersion();
+  res.json({ status: 'ok', version });
+});
 
 // ── Error handling ────────────────────────────────────────────────────────────
 
