@@ -309,8 +309,7 @@ prompt_route53_bootstrap() {
 
 verify_dns_prerequisites() {
   if [[ "${FRONTEND_ENABLED}" != "true" ]]; then
-    log "DNS verification skipped because FRONTEND_ENABLED=false."
-    return 0
+    log "FRONTEND_ENABLED=false; verifying hosted zone for backend resources."
   fi
   if [[ -z "${FRONTEND_ROOT_DOMAIN}" ]]; then
     log "FRONTEND_ROOT_DOMAIN is empty; cannot verify hosted zone."
