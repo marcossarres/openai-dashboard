@@ -225,6 +225,34 @@ ensure_public_ns_matches_route53() {
   return 0
 }
 
+ensure_alb_security_group_rules() {
+  if [[ -z "${SECURITY_GROUP_ID}" || "${SECURITY_GROUP_ID}" == "None" ]]; then
+    log "DefaultSecurityGroupId is empty; cannot ensure HTTPS ingress."
+    return 1
+  fi
+
+  local https_rule
+  https_rule=$(aws --profile "${AWS_PROFILE}" --region "${AWS_REGION}" ec2 describe-security-groups \
+    --group-ids "${SECURITY_GROUP_ID}" \
+    --query "SecurityGroups[0].IpPermissions[?IpProtocol=='tcp' && FromPort==\`443\` && ToPort==\`443\`]" \
+    --output text 2>/dev/null || echo "")
+
+  if [[ -n "${https_rule}" && "${https_rule}" != "None" ]]; then
+    log "Security group ${SECURITY_GROUP_ID} already allows HTTPS ingress."
+    return 0
+  fi
+
+  log "Authorizing TCP/443 ingress on security group ${SECURITY_GROUP_ID}..."
+  if ! aws --profile "${AWS_PROFILE}" --region "${AWS_REGION}" ec2 authorize-security-group-ingress \
+    --group-id "${SECURITY_GROUP_ID}" \
+    --ip-permissions '[{"IpProtocol":"tcp","FromPort":443,"ToPort":443,"IpRanges":[{"CidrIp":"0.0.0.0/0","Description":"ECS sarrescost ALB HTTPS"}]}]' >/dev/null 2>&1; then
+    log "Failed to authorize HTTPS ingress on ${SECURITY_GROUP_ID}."
+    return 1
+  fi
+  log "Security group ${SECURITY_GROUP_ID} now permits TCP/443 from 0.0.0.0/0."
+  return 0
+}
+
 create_route53_hosted_zone() {
   local domain="${FRONTEND_ROOT_DOMAIN%.}."
   local caller_ref="frontend-bootstrap-$(date +%s)"
@@ -948,6 +976,61 @@ JSON
   return 0
 }
 
+ensure_backend_route53_alias() {
+  local alias_dns="$1"
+  local alias_zone_id="$2"
+  if [[ -z "${BACKEND_HOSTED_ZONE_ID}" ]]; then
+    log "Cannot create backend Route 53 alias without a hosted zone id."
+    return 1
+  fi
+  if [[ -z "${alias_dns}" || "${alias_dns}" == "None" ]]; then
+    log "Cannot create backend Route 53 alias without a load balancer DNS name."
+    return 1
+  fi
+  if [[ -z "${alias_zone_id}" || "${alias_zone_id}" == "None" ]]; then
+    log "Cannot create backend Route 53 alias without the ALB canonical hosted zone id."
+    return 1
+  fi
+  local formatted_alias="${alias_dns%.}."
+  local change_file
+  change_file=$(mktemp)
+  cat <<JSON > "${change_file}"
+{
+  "Comment": "Alias ${BACKEND_DOMAIN} -> ${formatted_alias}",
+  "Changes": [{
+    "Action": "UPSERT",
+    "ResourceRecordSet": {
+      "Name": "${BACKEND_DOMAIN}.",
+      "Type": "A",
+      "AliasTarget": {
+        "HostedZoneId": "${alias_zone_id}",
+        "DNSName": "${formatted_alias}",
+        "EvaluateTargetHealth": false
+      }
+    }
+  },
+  {
+    "Action": "UPSERT",
+    "ResourceRecordSet": {
+      "Name": "${BACKEND_DOMAIN}.",
+      "Type": "AAAA",
+      "AliasTarget": {
+        "HostedZoneId": "${alias_zone_id}",
+        "DNSName": "${formatted_alias}",
+        "EvaluateTargetHealth": false
+      }
+    }
+  }]
+}
+JSON
+  aws --profile "${AWS_PROFILE}" route53 change-resource-record-sets \
+    --hosted-zone-id "${BACKEND_HOSTED_ZONE_ID}" \
+    --change-batch file://"${change_file}"
+  rm -f "${change_file}"
+  log "Route 53 alias for ${BACKEND_DOMAIN} now points to ${formatted_alias}."
+  return 0
+}
+
 flush_local_dns_cache() {
   local flushed="false"
   if command -v dscacheutil >/dev/null 2>&1; then
@@ -1035,6 +1118,11 @@ if ! verify_dns_prerequisites; then
   exit 1
 fi
 
+if ! ensure_alb_security_group_rules; then
+  log "Unable to ensure HTTPS ingress on security group ${SECURITY_GROUP_ID}."
+  exit 1
+fi
+
 if [[ -z "${BACKEND_HOSTED_ZONE_ID}" ]]; then
   BACKEND_HOSTED_ZONE_ID="${FRONTEND_HOSTED_ZONE_ID}"
 fi
@@ -1106,6 +1194,10 @@ log "  Cluster: ${CLUSTER_NAME:-n/a}"
 log "  Service: ${SERVICE_ARN:-n/a}"
 log "  ALB DNS: ${LOAD_BALANCER_DNS:-n/a}"
 
+if ! ensure_backend_route53_alias "${LOAD_BALANCER_DNS}" "${ALB_CANONICAL_ZONE_ID}"; then
+  log "Backend Route 53 alias update failed; verify DNS for ${BACKEND_DOMAIN} manually."
+fi
+
 SERVICE_NAME="${SERVICE_ARN##*/}"
 if [[ -n "${CLUSTER_NAME}" && -n "${SERVICE_NAME}" && "${SERVICE_NAME}" != "None" ]]; then
   log "ECS service details (cluster=${CLUSTER_NAME}, service=${SERVICE_NAME}):"
@@ -1121,6 +1213,18 @@ STACK_RESOURCE() {
     cloudformation describe-stack-resources --stack-name "${STACK_NAME}" \
     --logical-resource-id "$1" --query 'StackResources[0].PhysicalResourceId' --output text 2>/dev/null
 }
+
+ALB_ARN=$(STACK_RESOURCE SarrescostLoadBalancer || true)
+ALB_CANONICAL_ZONE_ID=""
+ALB_DNS_FROM_API=""
+if [[ -n "${ALB_ARN}" && "${ALB_ARN}" != "None" ]]; then
+  read -r ALB_DNS_FROM_API ALB_CANONICAL_ZONE_ID <<<"$(aws --profile "${AWS_PROFILE}" --region "${AWS_REGION}" elbv2 describe-load-balancers \
+    --load-balancer-arns "${ALB_ARN}" \
+    --query 'LoadBalancers[0].[DNSName,CanonicalHostedZoneId]' --output text 2>/dev/null || echo -e "\t")"
+fi
+if [[ -z "${LOAD_BALANCER_DNS}" || "${LOAD_BALANCER_DNS}" == "None" ]]; then
+  LOAD_BALANCER_DNS="${ALB_DNS_FROM_API:-}"
+fi
 
 ASG_NAME=$(STACK_RESOURCE SarrescostAutoScalingGroup || true)
 if [[ -n "${ASG_NAME}" && "${ASG_NAME}" != "None" ]]; then
