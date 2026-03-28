@@ -993,11 +993,15 @@ ensure_backend_route53_alias() {
     return 1
   fi
   local formatted_alias="${alias_dns%.}."
+  local alias_target="${formatted_alias}"
+  if [[ "${alias_target}" != dualstack.* ]]; then
+    alias_target="dualstack.${alias_target}"
+  fi
   local change_file
   change_file=$(mktemp)
   cat <<JSON > "${change_file}"
 {
-  "Comment": "Alias ${BACKEND_DOMAIN} -> ${formatted_alias}",
+  "Comment": "Alias ${BACKEND_DOMAIN} -> ${alias_target}",
   "Changes": [{
     "Action": "UPSERT",
     "ResourceRecordSet": {
@@ -1005,7 +1009,7 @@ ensure_backend_route53_alias() {
       "Type": "A",
       "AliasTarget": {
         "HostedZoneId": "${alias_zone_id}",
-        "DNSName": "${formatted_alias}",
+        "DNSName": "${alias_target}",
         "EvaluateTargetHealth": false
       }
     }
@@ -1017,18 +1021,22 @@ ensure_backend_route53_alias() {
       "Type": "AAAA",
       "AliasTarget": {
         "HostedZoneId": "${alias_zone_id}",
-        "DNSName": "${formatted_alias}",
+        "DNSName": "${alias_target}",
         "EvaluateTargetHealth": false
       }
     }
   }]
 }
 JSON
-  aws --profile "${AWS_PROFILE}" route53 change-resource-record-sets \
+  if ! aws --profile "${AWS_PROFILE}" route53 change-resource-record-sets \
     --hosted-zone-id "${BACKEND_HOSTED_ZONE_ID}" \
-    --change-batch file://"${change_file}"
+    --change-batch file://"${change_file}"; then
+    log "Failed to update backend Route 53 alias for ${BACKEND_DOMAIN}."
+    rm -f "${change_file}"
+    return 1
+  fi
   rm -f "${change_file}"
-  log "Route 53 alias for ${BACKEND_DOMAIN} now points to ${formatted_alias}."
+  log "Route 53 alias for ${BACKEND_DOMAIN} now points to ${alias_target}."
   return 0
 }
 
