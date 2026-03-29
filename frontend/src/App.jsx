@@ -45,6 +45,7 @@ export default function App() {
   const [awsSynced, setAwsSynced] = useState(false);
   const [awsMetrics, setAwsMetrics] = useState(null);
   const [awsMetricsError, setAwsMetricsError] = useState(null);
+  const [awsMetricsConfig, setAwsMetricsConfig] = useState(null);
 
   // Claude state
   const [claudeData, setClaudeData] = useState(null);
@@ -103,11 +104,21 @@ export default function App() {
     }
   }, [dateRange.start, dateRange.end]);
 
+  const loadAwsMetricsConfig = useCallback(async () => {
+    try {
+      const res = await apiClient.get('/api/aws/metrics/config');
+      setAwsMetricsConfig(res.data);
+    } catch (err) {
+      console.warn('Failed to load AWS metrics config', err.message);
+    }
+  }, []);
+
   const fetchAWS = useCallback(async () => {
     setAwsLoading(true);
     setAwsError(null);
     setAwsMetricsError(null);
     setAwsMetrics(null);
+    loadAwsMetricsConfig();
     try {
       const params = { start_date: dateRange.start, end_date: dateRange.end };
       const [costsResult, metricsResult] = await Promise.allSettled([
@@ -127,6 +138,7 @@ export default function App() {
       } else if (metricsResult.status === 'rejected') {
         setAwsMetricsError(metricsResult.reason?.response?.data?.error || metricsResult.reason?.message || 'Failed to fetch AWS metrics.');
       }
+
     } catch (err) {
       setAwsError(err.response?.data?.error || err.message || 'Failed to fetch AWS cost data.');
       setAwsSynced(false);
@@ -134,7 +146,7 @@ export default function App() {
     } finally {
       setAwsLoading(false);
     }
-  }, [dateRange.start, dateRange.end]);
+  }, [dateRange.start, dateRange.end, loadAwsMetricsConfig]);
 
   const fetchClaude = useCallback(async () => {
     setClaudeLoading(true);
@@ -162,6 +174,13 @@ export default function App() {
   const handleSync = isOpenAI ? fetchOpenAI : isAWS ? fetchAWS : fetchClaude;
   const accentColor = isOpenAI ? '#00d4aa' : isAWS ? '#f59e0b' : '#8b5cf6';
   const accentDark = isOpenAI ? '#00a882' : isAWS ? '#d97706' : '#7c3aed';
+  const metricsDisabled = awsMetricsConfig && !awsMetricsConfig.has_ecs_metrics && !awsMetricsConfig.has_alb_metrics;
+
+  useEffect(() => {
+    if (isAWS) {
+      loadAwsMetricsConfig();
+    }
+  }, [isAWS, loadAwsMetricsConfig]);
 
   return (
     <div className="min-h-screen bg-[#0f0f0f] text-gray-200">
@@ -388,9 +407,28 @@ export default function App() {
                     <AwsServiceBreakdown awsData={awsData} />
                   </section>
                 )}
-                {awsSynced && awsMetrics && awsMetrics.ecs === null && awsMetrics.alb === null && !awsMetricsError && (
-                  <div className="bg-[#141414] border border-dashed border-[#333] rounded-xl p-6 mb-8 text-[#666] text-sm">
-                    Configure <span className="font-mono text-[#888]">ECS_CLUSTER_NAME</span>, <span className="font-mono text-[#888]">ECS_SERVICE_NAME</span>, and <span className="font-mono text-[#888]">ALB_RESOURCE_ARN</span> in the backend environment to enable ECS/ALB metrics.
+                {awsSynced && awsMetricsConfig && (
+                  <section className="mb-8">
+                    <p className="text-xs font-semibold text-[#555] uppercase tracking-widest mb-3">Metrics configuration</p>
+                    <div className="bg-[#141414] border border-[#222] rounded-xl p-5 grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
+                      <div>
+                        <p className="m-0 text-[#666] uppercase text-[11px] tracking-wider">ECS Cluster</p>
+                        <p className="m-0 text-gray-200 font-mono text-xs">{awsMetricsConfig.ecs_cluster || 'Not set'}</p>
+                      </div>
+                      <div>
+                        <p className="m-0 text-[#666] uppercase text-[11px] tracking-wider">ECS Service</p>
+                        <p className="m-0 text-gray-200 font-mono text-xs">{awsMetricsConfig.ecs_service || 'Not set'}</p>
+                      </div>
+                      <div>
+                        <p className="m-0 text-[#666] uppercase text-[11px] tracking-wider">ALB Resource</p>
+                        <p className="m-0 text-gray-200 font-mono text-xs break-all">{awsMetricsConfig.alb_resource || 'Not set'}</p>
+                      </div>
+                    </div>
+                  </section>
+                )}
+                {awsSynced && metricsDisabled && !awsMetricsError && (
+                  <div className="bg-[#141414] border border-dashed border-[#333] rounded-xl p-6 mb-8 text-[#ccc] text-sm">
+                    Add values for <span className="font-mono text-[#fbbf24]">ECS_CLUSTER_NAME</span>, <span className="font-mono text-[#fbbf24]">ECS_SERVICE_NAME</span>, and <span className="font-mono text-[#fbbf24]">ALB_RESOURCE_ARN</span> in the backend environment to enable the ECS/ALB metrics graphs.
                   </div>
                 )}
                 {awsSynced && Array.isArray(awsMetrics?.ecs) && awsMetrics.ecs.length > 0 && (

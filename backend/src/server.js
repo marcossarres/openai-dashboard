@@ -768,6 +768,16 @@ app.get('/api/aws/metrics', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+app.get('/api/aws/metrics/config', (_req, res) => {
+  res.json({
+    ecs_cluster: ecsClusterName || null,
+    ecs_service: ecsServiceName || null,
+    alb_resource: albResourceArn || null,
+    has_ecs_metrics: hasEcsMetrics,
+    has_alb_metrics: hasAlbMetrics,
+  });
+});
+
 app.get('/api/claude/costs', async (req, res, next) => {
   try {
     const { start_date, end_date } = req.query;
