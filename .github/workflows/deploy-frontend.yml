@@ -17,16 +17,14 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  DEFAULT_PROJECT_NAME: test
-  DEFAULT_DOMAIN: moneyclip.com.br
 
 jobs:
   deploy-frontend:
     runs-on: ubuntu-latest
     env:
-      PROJECT_NAME: ${{ github.event.inputs.project_name || env.DEFAULT_PROJECT_NAME }}
-      DOMAIN_NAME: ${{ github.event.inputs.domain || env.DEFAULT_DOMAIN }}
-      S3_BUCKET: ${{ format('{0}.{1}', github.event.inputs.project_name || env.DEFAULT_PROJECT_NAME, github.event.inputs.domain || env.DEFAULT_DOMAIN) }}
+      PROJECT_NAME: ${{ github.event.inputs.project_name || 'test' }}
+      DOMAIN_NAME: ${{ github.event.inputs.domain || 'moneyclip.com.br' }}
+      S3_BUCKET: ${{ format('{0}.{1}', github.event.inputs.project_name || 'test', github.event.inputs.domain || 'moneyclip.com.br') }}
 
     steps:
       - name: Checkout repo
