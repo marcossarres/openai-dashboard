@@ -8,6 +8,7 @@ import dotenv from 'dotenv';
 import swaggerJsdoc from 'swagger-jsdoc';
 import swaggerUi from 'swagger-ui-express';
 import { CostExplorerClient, GetCostAndUsageCommand } from '@aws-sdk/client-cost-explorer';
+import { CloudWatchClient, GetMetricStatisticsCommand } from '@aws-sdk/client-cloudwatch';
 import { fromIni } from '@aws-sdk/credential-providers';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -26,6 +27,11 @@ const githubRepoName = process.env.GITHUB_REPO_NAME || 'openai-dashboard';
 const githubWorkflowFile = process.env.GITHUB_VERSION_WORKFLOW || 'deploy-frontend.yml';
 const githubToken = process.env.GITHUB_VERSION_TOKEN || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
 const versionCacheTtlMs = Number(process.env.HEALTH_VERSION_CACHE_MS || 60_000);
+const ecsClusterName = process.env.ECS_CLUSTER_NAME || '';
+const ecsServiceName = process.env.ECS_SERVICE_NAME || '';
+const albResourceArn = process.env.ALB_RESOURCE_ARN || '';
+const hasEcsMetrics = Boolean(ecsClusterName && ecsServiceName);
+const hasAlbMetrics = Boolean(albResourceArn);
 
 // Mutable key — can be updated at runtime via /api/config/key
 let apiKey = process.env.OPENAI_API_KEY || '';
@@ -37,6 +43,8 @@ let awsAccessKeyId = process.env.AWS_ACCESS_KEY_ID || '';
 let awsSecretAccessKey = process.env.AWS_SECRET_ACCESS_KEY || '';
 let awsRegion = process.env.AWS_REGION || 'us-east-1';
 const awsProfile = process.env.AWS_PROFILE || 'aws-cloudy';
+const MS_IN_DAY = 24 * 60 * 60 * 1000;
+const METRIC_PERIOD_SECONDS = 24 * 60 * 60; // daily datapoints
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -647,6 +655,116 @@ app.get('/api/aws/costs', async (req, res, next) => {
     });
 
     res.json({ total_cost: totalCents, daily_costs });
+  } catch (err) { next(err); }
+});
+
+function parseDateOnly(dateStr) {
+  if (!dateStr) return null;
+  const parsed = new Date(`${dateStr}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function resolveMetricRange(startStr, endStr) {
+  const now = new Date();
+  const endDate = parseDateOnly(endStr) || now;
+  const startDate = parseDateOnly(startStr) || new Date(endDate.getTime() - 7 * MS_IN_DAY);
+  if (startDate.getTime() >= endDate.getTime()) {
+    startDate.setTime(endDate.getTime() - MS_IN_DAY);
+  }
+  const start = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate()));
+  const end = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate() + 1));
+  return { start, end };
+}
+
+function sortByTimestamp(a, b) {
+  return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+}
+
+async function fetchMetricSeries(client, { namespace, metricName, dimensions, start, end, stat = 'Average', unit }) {
+  const command = new GetMetricStatisticsCommand({
+    Namespace: namespace,
+    MetricName: metricName,
+    Dimensions: dimensions,
+    StartTime: start,
+    EndTime: end,
+    Period: METRIC_PERIOD_SECONDS,
+    Statistics: [stat],
+    Unit: unit,
+  });
+  const response = await client.send(command);
+  const datapoints = response.Datapoints || [];
+  return datapoints
+    .filter((point) => typeof point[stat] === 'number')
+    .map((point) => ({
+      timestamp: new Date(point.Timestamp).toISOString(),
+      value: Number(point[stat]),
+    }))
+    .sort(sortByTimestamp);
+}
+
+function mergeMetricSeries(primary, secondary, primaryKey, secondaryKey, primaryDecimals = 2, secondaryDecimals = 2) {
+  const map = new Map();
+  primary.forEach(({ timestamp, value }) => {
+    map.set(timestamp, {
+      timestamp,
+      [primaryKey]: Number(value.toFixed(primaryDecimals)),
+    });
+  });
+  secondary.forEach(({ timestamp, value }) => {
+    const entry = map.get(timestamp) || { timestamp };
+    entry[secondaryKey] = Number(value.toFixed(secondaryDecimals));
+    map.set(timestamp, entry);
+  });
+  return Array.from(map.values()).sort(sortByTimestamp);
+}
+
+async function fetchEcsMetrics(client, start, end) {
+  if (!hasEcsMetrics) return null;
+  const dimensions = [
+    { Name: 'ClusterName', Value: ecsClusterName },
+    { Name: 'ServiceName', Value: ecsServiceName },
+  ];
+  const [cpuSeries, memorySeries] = await Promise.all([
+    fetchMetricSeries(client, { namespace: 'AWS/ECS', metricName: 'CPUUtilization', dimensions, start, end, stat: 'Average' }),
+    fetchMetricSeries(client, { namespace: 'AWS/ECS', metricName: 'MemoryUtilization', dimensions, start, end, stat: 'Average' }),
+  ]);
+  if (!cpuSeries.length && !memorySeries.length) return [];
+  return mergeMetricSeries(cpuSeries, memorySeries, 'cpu', 'memory');
+}
+
+async function fetchAlbMetrics(client, start, end) {
+  if (!hasAlbMetrics) return null;
+  const dimensions = [{ Name: 'LoadBalancer', Value: albResourceArn }];
+  const series = await fetchMetricSeries(client, {
+    namespace: 'AWS/ApplicationELB',
+    metricName: 'RequestCount',
+    dimensions,
+    start,
+    end,
+    stat: 'Sum',
+    unit: 'Count',
+  });
+  if (!series.length) return [];
+  return series.map(({ timestamp, value }) => ({
+    timestamp,
+    requests: Math.round(value),
+  }));
+}
+
+app.get('/api/aws/metrics', async (req, res, next) => {
+  try {
+    if (!hasEcsMetrics && !hasAlbMetrics) {
+      return res.json({ ecs: null, alb: null });
+    }
+    const { start_date, end_date } = req.query;
+    const { start, end } = resolveMetricRange(start_date, end_date);
+    const cloudWatchClient = new CloudWatchClient(getAwsClientConfig());
+    const [ecs, alb] = await Promise.all([
+      hasEcsMetrics ? fetchEcsMetrics(cloudWatchClient, start, end) : null,
+      hasAlbMetrics ? fetchAlbMetrics(cloudWatchClient, start, end) : null,
+    ]);
+    res.json({ ecs, alb });
   } catch (err) { next(err); }
 });
 

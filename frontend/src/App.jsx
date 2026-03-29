@@ -6,6 +6,8 @@ import ModelBreakdown from './components/ModelBreakdown.jsx';
 import AwsCostSummary from './components/AwsCostSummary.jsx';
 import AwsUsageChart from './components/AwsUsageChart.jsx';
 import AwsServiceBreakdown from './components/AwsServiceBreakdown.jsx';
+import AwsEcsMetricsChart from './components/AwsEcsMetricsChart.jsx';
+import AwsAlbMetricsChart from './components/AwsAlbMetricsChart.jsx';
 import ClaudeCostSummary from './components/ClaudeCostSummary.jsx';
 import ApiKeyModal from './components/ApiKeyModal.jsx';
 
@@ -41,6 +43,8 @@ export default function App() {
   const [awsLoading, setAwsLoading] = useState(false);
   const [awsError, setAwsError] = useState(null);
   const [awsSynced, setAwsSynced] = useState(false);
+  const [awsMetrics, setAwsMetrics] = useState(null);
+  const [awsMetricsError, setAwsMetricsError] = useState(null);
 
   // Claude state
   const [claudeData, setClaudeData] = useState(null);
@@ -102,13 +106,31 @@ export default function App() {
   const fetchAWS = useCallback(async () => {
     setAwsLoading(true);
     setAwsError(null);
+    setAwsMetricsError(null);
+    setAwsMetrics(null);
     try {
       const params = { start_date: dateRange.start, end_date: dateRange.end };
-      const res = await apiClient.get('/api/aws/costs', { params });
-      setAwsData(res.data);
-      setAwsSynced(true);
+      const [costsResult, metricsResult] = await Promise.allSettled([
+        apiClient.get('/api/aws/costs', { params }),
+        apiClient.get('/api/aws/metrics', { params }),
+      ]);
+
+      if (costsResult.status === 'fulfilled') {
+        setAwsData(costsResult.value.data);
+        setAwsSynced(true);
+      } else {
+        throw costsResult.reason;
+      }
+
+      if (metricsResult.status === 'fulfilled') {
+        setAwsMetrics(metricsResult.value.data);
+      } else if (metricsResult.status === 'rejected') {
+        setAwsMetricsError(metricsResult.reason?.response?.data?.error || metricsResult.reason?.message || 'Failed to fetch AWS metrics.');
+      }
     } catch (err) {
       setAwsError(err.response?.data?.error || err.message || 'Failed to fetch AWS cost data.');
+      setAwsSynced(false);
+      setAwsMetrics(null);
     } finally {
       setAwsLoading(false);
     }
@@ -327,6 +349,11 @@ export default function App() {
                 <span className="font-semibold shrink-0">Error:</span><span>{awsError}</span>
               </div>
             )}
+            {awsMetricsError && !awsError && (
+              <div className="bg-amber-950 border border-amber-800 rounded-lg px-5 py-3 text-amber-200 text-sm mb-6 flex gap-2 items-start">
+                <span className="font-semibold shrink-0">Metrics:</span><span>{awsMetricsError}</span>
+              </div>
+            )}
             {awsLoading ? (
               <div className="flex flex-col items-center justify-center py-24 gap-4 text-[#555] text-sm">
                 <div className="w-10 h-10 border-[3px] border-[#222] border-t-[#f59e0b] rounded-full spinner" />
@@ -359,6 +386,23 @@ export default function App() {
                   <section className="mb-8">
                     <p className="text-xs font-semibold text-[#555] uppercase tracking-widest mb-3">Cost by Service</p>
                     <AwsServiceBreakdown awsData={awsData} />
+                  </section>
+                )}
+                {awsSynced && awsMetrics && awsMetrics.ecs === null && awsMetrics.alb === null && !awsMetricsError && (
+                  <div className="bg-[#141414] border border-dashed border-[#333] rounded-xl p-6 mb-8 text-[#666] text-sm">
+                    Configure <span className="font-mono text-[#888]">ECS_CLUSTER_NAME</span>, <span className="font-mono text-[#888]">ECS_SERVICE_NAME</span>, and <span className="font-mono text-[#888]">ALB_RESOURCE_ARN</span> in the backend environment to enable ECS/ALB metrics.
+                  </div>
+                )}
+                {awsSynced && Array.isArray(awsMetrics?.ecs) && awsMetrics.ecs.length > 0 && (
+                  <section className="mb-8">
+                    <p className="text-xs font-semibold text-[#555] uppercase tracking-widest mb-3">ECS CPU & Memory Utilization</p>
+                    <AwsEcsMetricsChart data={awsMetrics.ecs} />
+                  </section>
+                )}
+                {awsSynced && Array.isArray(awsMetrics?.alb) && awsMetrics.alb.length > 0 && (
+                  <section className="mb-8">
+                    <p className="text-xs font-semibold text-[#555] uppercase tracking-widest mb-3">ALB Request Count</p>
+                    <AwsAlbMetricsChart data={awsMetrics.alb} />
                   </section>
                 )}
                 {awsSynced && !awsData?.daily_costs?.length && !awsError && (
