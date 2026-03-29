@@ -5,15 +5,27 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      project_name:
+        description: 'Project name (e.g., newproj)'
+        required: true
+        type: string
+      domain:
+        description: 'Root domain (e.g., moneyclip.com.br)'
+        required: true
+        type: string
 
 env:
   AWS_REGION: us-east-1
   ECR_REGISTRY: 915759771410.dkr.ecr.us-east-1.amazonaws.com
-  ECR_REPOSITORY: test-moneyclip.com.br-ecr-repo
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    env:
+      PROJECT_NAME: ${{ github.event.inputs.project_name || 'test' }}
+      DOMAIN_NAME: ${{ github.event.inputs.domain || 'moneyclip.com.br' }}
+      ECR_REPOSITORY: ${{ format('{0}-{1}-ecr-repo', github.event.inputs.project_name || 'test', github.event.inputs.domain || 'moneyclip.com.br') }}
 
     steps:
       - name: Checkout repo
