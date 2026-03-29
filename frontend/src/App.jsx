@@ -183,7 +183,7 @@ export default function App() {
   }, [isAWS, loadAwsMetricsConfig]);
 
   return (
-    <div className="min-h-screen bg-[#0f0f0f] text-gray-200">
+    <div className="min-h-screen bg-[#00008b] text-gray-200">
       <ApiKeyModal
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}

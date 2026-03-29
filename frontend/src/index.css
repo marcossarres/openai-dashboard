@@ -4,7 +4,7 @@
 
 @layer base {
   body {
-    @apply bg-[#0f0f0f] text-gray-200 m-0;
+    @apply bg-[#00008b] text-gray-200 m-0;
     font-family: 'Inter', 'Segoe UI', sans-serif;
   }
   * {

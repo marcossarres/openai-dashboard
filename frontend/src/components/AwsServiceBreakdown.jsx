@@ -1,9 +1,6 @@
 import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
+  PieChart,
+  Pie,
   Tooltip,
   Cell,
   ResponsiveContainer,
@@ -25,10 +22,6 @@ function aggregateByService(awsData) {
   return Array.from(map.entries())
     .map(([name, costCents]) => ({ name, cost: parseFloat((costCents / 100).toFixed(4)) }))
     .sort((a, b) => b.cost - a.cost);
-}
-
-function truncate(str, max = 22) {
-  return str.length > max ? str.slice(0, max) + '…' : str;
 }
 
 const CustomTooltip = ({ active, payload }) => {
@@ -53,36 +46,27 @@ export default function AwsServiceBreakdown({ awsData }) {
     );
   }
 
-  const chartData = data.map((d) => ({ ...d, shortName: truncate(d.name) }));
-
   return (
     <div className="bg-[#141414] border border-[#222] rounded-xl px-4 pt-6 pb-6 flex flex-col gap-6">
       <ResponsiveContainer width="100%" height={280}>
-        <BarChart data={chartData} margin={{ top: 4, right: 16, left: 0, bottom: 40 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#1e1e1e" vertical={false} />
-          <XAxis
-            dataKey="shortName"
-            tick={{ fill: '#555', fontSize: 11 }}
-            tickLine={false}
-            axisLine={false}
-            angle={-35}
-            textAnchor="end"
-            interval={0}
-          />
-          <YAxis
-            tick={{ fill: '#555', fontSize: 12 }}
-            tickLine={false}
-            axisLine={false}
-            tickFormatter={(v) => `$${v}`}
-            width={52}
-          />
-          <Tooltip content={<CustomTooltip />} cursor={{ fill: '#1c1c1c' }} />
-          <Bar dataKey="cost" radius={[4, 4, 0, 0]}>
-            {chartData.map((_, index) => (
-              <Cell key={index} fill={PALETTE[index % PALETTE.length]} fillOpacity={0.85} />
+        <PieChart>
+          <Pie
+            data={data}
+            dataKey="cost"
+            nameKey="name"
+            cx="50%"
+            cy="50%"
+            innerRadius={70}
+            outerRadius={110}
+            paddingAngle={2}
+            stroke="#0f0f0f"
+          >
+            {data.map((entry, index) => (
+              <Cell key={entry.name} fill={PALETTE[index % PALETTE.length]} fillOpacity={0.9} />
             ))}
-          </Bar>
-        </BarChart>
+          </Pie>
+          <Tooltip content={<CustomTooltip />} />
+        </PieChart>
       </ResponsiveContainer>
 
       <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
