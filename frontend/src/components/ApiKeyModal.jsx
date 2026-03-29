@@ -291,20 +291,42 @@ function AwsTab({ onClose }) {
 
 function ConnectionTab({ onClose }) {
   const [url, setUrl] = useState(getApiBaseUrl);
-  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [statusMessage, setStatusMessage] = useState('');
+  const [version, setVersion] = useState(null);
+  const [error, setError] = useState(null);
 
-  function handleSave(e) {
+  async function handleSave(e) {
     e.preventDefault();
+    setSaving(true);
+    setError(null);
+    setStatusMessage('');
+    setVersion(null);
+
     setApiBaseUrl(url);
-    setSaved(true);
-    setTimeout(onClose, 1000);
+    const normalized = getApiBaseUrl();
+    setUrl(normalized);
+    setStatusMessage('Base URL saved. Checking /health…');
+
+    try {
+      const res = await apiClient.get('/health');
+      const apiVersion = res.data?.version ?? 'unknown';
+      setStatusMessage('Connected to API');
+      setVersion(apiVersion);
+    } catch (err) {
+      setStatusMessage('Base URL saved, but health check failed.');
+      setError(err.response?.data?.error || err.message || 'Failed to reach /health');
+    } finally {
+      setSaving(false);
+    }
   }
 
   function handleClear() {
-    setUrl('');
     setApiBaseUrl('');
-    setSaved(true);
-    setTimeout(onClose, 1000);
+    setUrl('');
+    setStatusMessage('Base URL cleared. Using relative API paths.');
+    setVersion(null);
+    setError(null);
   }
 
   return (
@@ -314,7 +336,12 @@ function ConnectionTab({ onClose }) {
         <input
           type="text"
           value={url}
-          onChange={(e) => { setUrl(e.target.value); setSaved(false); }}
+          onChange={(e) => {
+            setUrl(e.target.value);
+            setStatusMessage('');
+            setError(null);
+            setVersion(null);
+          }}
           placeholder="http://localhost:3001"
           className="w-full bg-[#111] border border-[#333] focus:border-[#888] rounded-lg px-4 py-2.5 text-sm text-gray-200 font-mono outline-none transition-colors"
           autoFocus
@@ -324,7 +351,22 @@ function ConnectionTab({ onClose }) {
         </p>
       </div>
 
-      {saved && <div className="bg-emerald-950 border border-emerald-800 rounded-lg px-4 py-2.5 text-emerald-400 text-sm">Saved!</div>}
+      {statusMessage && (
+        <div className="bg-emerald-950 border border-emerald-800 rounded-lg px-4 py-2.5 text-emerald-400 text-sm">
+          <div>{statusMessage}</div>
+          {version != null && (
+            <div className="mt-1 text-xs text-emerald-300">
+              API version: <span className="font-mono text-emerald-200">{String(version)}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <div className="bg-red-950 border border-red-800 rounded-lg px-4 py-2.5 text-red-400 text-sm">
+          {error}
+        </div>
+      )}
 
       <div className="flex gap-3 pt-1">
         <button type="button" onClick={handleClear} className="bg-[#1c1c1c] border border-[#333] text-[#555] hover:text-gray-300 rounded-lg py-2.5 text-sm transition-colors px-4">
@@ -333,8 +375,12 @@ function ConnectionTab({ onClose }) {
         <button type="button" onClick={onClose} className="flex-1 bg-[#1c1c1c] border border-[#333] text-gray-400 hover:text-gray-200 rounded-lg py-2.5 text-sm transition-colors">
           Cancel
         </button>
-        <button type="submit" className="flex-1 bg-[#333] hover:bg-[#3a3a3a] text-gray-200 font-semibold rounded-lg py-2.5 text-sm transition-colors">
-          Save
+        <button
+          type="submit"
+          disabled={saving}
+          className={`flex-1 bg-[#333] hover:bg-[#3a3a3a] text-gray-200 font-semibold rounded-lg py-2.5 text-sm transition-colors ${saving ? 'opacity-70 cursor-not-allowed' : ''}`}
+        >
+          {saving ? 'Saving…' : 'Save'}
         </button>
       </div>
     </form>
