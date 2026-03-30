@@ -10,6 +10,7 @@
 #   ECS_CLUSTER_NAME        ECS cluster name to delete if stack removal fails
 #                           because the cluster still exists (default: sarrescost-cluster)
 #   POLL_INTERVAL_SECONDS   Seconds between progress polls (default: 10)
+#   PROJECT                 Project prefix for resource names (can also be provided via --project/-p)
 #
 # Example:
 #   STACK_NAME=cost-backend-formation ./scripts/delete-cost-backend.sh
@@ -18,17 +19,21 @@ set -euo pipefail
 
 AWS_PROFILE="${AWS_PROFILE:-aws-cloudy}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
-STACK_NAME="${STACK_NAME:-cost-backend-formation}"
-ECS_CLUSTER_NAME="${ECS_CLUSTER_NAME:-sarrescost-cluster}"
+DEFAULT_STACK_SENTINEL="__DEFAULT_STACK_NAME__"
+STACK_NAME="${STACK_NAME:-${DEFAULT_STACK_SENTINEL}}"
+DEFAULT_CLUSTER_SENTINEL="__DEFAULT_ECS_CLUSTER__"
+ECS_CLUSTER_NAME="${ECS_CLUSTER_NAME:-${DEFAULT_CLUSTER_SENTINEL}}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-10}"
 
 usage() {
   cat <<USAGE
-Usage: $(basename "$0") --domain <root-domain>
+Usage: $(basename "$0") --domain <root-domain> --project <name>
 
 Required arguments:
-  --domain, -d    Root domain (e.g., sarres.com.br). Frontend assets deployed at costly.<root-domain>
-                  will be cleaned up in addition to the backend stack.
+  --domain, -d    Root domain (e.g., sarres.com.br). Frontend assets deployed at
+                  <project>.<root-domain> will be cleaned up in addition to the backend stack.
+  --project, -p   Project prefix (alphanumeric + dashes). Ensures the script targets the right
+                  stack/cluster names (e.g., <project>-cloud-formation, <project>-ecs-cluster).
 
 Environment overrides:
   STACK_NAME, ECS_CLUSTER_NAME, AWS_PROFILE, AWS_REGION, FRONTEND_HOSTED_ZONE_ID,
@@ -37,6 +42,7 @@ USAGE
 }
 
 DOMAIN="${DOMAIN:-}"
+PROJECT="${PROJECT:-}"
 
 parse_args() {
   while [[ $# -gt 0 ]]; do
@@ -48,6 +54,15 @@ parse_args() {
           exit 1
         fi
         DOMAIN="$2"
+        shift 2
+        ;;
+      --project|-p)
+        if [[ -z "${2:-}" ]]; then
+          log "Missing value for $1."
+          usage
+          exit 1
+        fi
+        PROJECT="$2"
         shift 2
         ;;
       --help|-h)
@@ -84,17 +99,66 @@ if [[ -z "${DOMAIN}" ]]; then
   exit 1
 fi
 
-FRONTEND_ROOT_DOMAIN="${FRONTEND_ROOT_DOMAIN:-${DOMAIN}}"
-FRONTEND_DOMAIN="${FRONTEND_DOMAIN:-costly.${DOMAIN}}"
-FRONTEND_BUCKET="${FRONTEND_BUCKET:-costly.${DOMAIN}}"
+DOMAIN_NORMALIZED="$(printf '%s' "${DOMAIN}" | tr '[:upper:]' '[:lower:]')"
+DOMAIN_DNS_LABEL="$(printf '%s' "${DOMAIN_NORMALIZED}" | sed -E 's/[^a-z0-9.-]+/-/g' | sed -E 's/-+/-/g' | sed -E 's/^-+|-+$//g')"
+if [[ -z "${DOMAIN_DNS_LABEL}" ]]; then
+  log "DOMAIN must contain at least one valid character (letters, numbers, dashes, or dots)."
+  exit 1
+fi
+if [[ "${DOMAIN}" != "${DOMAIN_DNS_LABEL}" ]]; then
+  log "Normalized domain to '${DOMAIN_DNS_LABEL}'."
+fi
+DOMAIN_PREFIX_SEGMENT="$(printf '%s' "${DOMAIN_DNS_LABEL}" | tr '.' '-' | sed -E 's/-+/-/g' | sed -E 's/^-+|-+$//g')"
+if [[ -z "${DOMAIN_PREFIX_SEGMENT}" ]]; then
+  log "DOMAIN prefix segment is empty after normalization; please choose a valid domain."
+  exit 1
+fi
+
+if [[ -z "${PROJECT}" ]]; then
+  log "PROJECT parameter is required."
+  usage
+  exit 1
+fi
+
+PROJECT_PREFIX="$(printf '%s' "${PROJECT}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g' | sed -E 's/^-+|-+$//g')"
+if [[ -z "${PROJECT_PREFIX}" ]]; then
+  log "PROJECT must contain at least one alphanumeric character (letters, numbers, dashes)."
+  exit 1
+fi
+if [[ "${PROJECT}" != "${PROJECT_PREFIX}" ]]; then
+  log "Normalized project prefix to '${PROJECT_PREFIX}' to satisfy AWS naming rules."
+fi
+
+RESOURCE_PREFIX="${PROJECT_PREFIX}-${DOMAIN_PREFIX_SEGMENT}"
+log "Resource prefix set to '${RESOURCE_PREFIX}'."
+
+if [[ "${STACK_NAME}" == "${DEFAULT_STACK_SENTINEL}" ]]; then
+  STACK_NAME="${RESOURCE_PREFIX}-cloud-formation"
+fi
+
+if [[ "${ECS_CLUSTER_NAME}" == "${DEFAULT_CLUSTER_SENTINEL}" ]]; then
+  ECS_CLUSTER_NAME="${RESOURCE_PREFIX}-ecs-cluster"
+fi
+
+FRONTEND_ROOT_DOMAIN="${FRONTEND_ROOT_DOMAIN:-${DOMAIN_DNS_LABEL}}"
+FRONTEND_DOMAIN="${FRONTEND_DOMAIN:-${PROJECT_PREFIX}.${FRONTEND_ROOT_DOMAIN}}"
+FRONTEND_BUCKET="${FRONTEND_BUCKET:-${FRONTEND_DOMAIN}}"
 FRONTEND_BUCKET_REGION="${FRONTEND_BUCKET_REGION:-${AWS_REGION}}"
 FRONTEND_CERT_REGION="${FRONTEND_CERT_REGION:-us-east-1}"
 FRONTEND_HOSTED_ZONE_ID="${FRONTEND_HOSTED_ZONE_ID:-}"
 FRONTEND_DISTRIBUTION_ID="${FRONTEND_DISTRIBUTION_ID:-}"
-BACKEND_DOMAIN="${BACKEND_DOMAIN:-api.${DOMAIN}}"
+BACKEND_DOMAIN="${BACKEND_DOMAIN:-api.${PROJECT_PREFIX}.${DOMAIN_DNS_LABEL}}"
 BACKEND_CERT_REGION="${BACKEND_CERT_REGION:-${AWS_REGION}}"
 BACKEND_HOSTED_ZONE_ID="${BACKEND_HOSTED_ZONE_ID:-}"
 SECURITY_GROUP_ID="${SECURITY_GROUP_ID:-}"
+
+stack_parameter() {
+  local key="$1"
+  aws --profile "${AWS_PROFILE}" --region "${AWS_REGION}" \
+    cloudformation describe-stacks --stack-name "${STACK_NAME}" \
+    --query "Stacks[0].Parameters[?ParameterKey=='${key}'].ParameterValue" \
+    --output text 2>/dev/null
+}
 
 if [[ -z "${SECURITY_GROUP_ID}" || "${SECURITY_GROUP_ID}" == "None" ]]; then
   SECURITY_GROUP_ID="$(stack_parameter DefaultSecurityGroupId || true)"
@@ -123,14 +187,6 @@ resource_label() {
     AWS::CloudFormation::Stack) echo "CloudFormation stack (${logical})" ;;
     *) echo "${type} (${logical})" ;;
   esac
-}
-
-stack_parameter() {
-  local key="$1"
-  aws --profile "${AWS_PROFILE}" --region "${AWS_REGION}" \
-    cloudformation describe-stacks --stack-name "${STACK_NAME}" \
-    --query "Stacks[0].Parameters[?ParameterKey=='${key}'].ParameterValue" \
-    --output text 2>/dev/null
 }
 
 set_event_cursor() {
@@ -399,17 +455,12 @@ PY
 }
 
 delete_frontend_bucket() {
-  log "Checking frontend bucket s3://${FRONTEND_BUCKET}..."
+  log "Skipping deletion of frontend bucket s3://${FRONTEND_BUCKET} per retention policy."
   if aws --profile "${AWS_PROFILE}" --region "${FRONTEND_BUCKET_REGION}" s3api head-bucket \
     --bucket "${FRONTEND_BUCKET}" >/dev/null 2>&1; then
-    log "Removing s3://${FRONTEND_BUCKET} (and all contents)..."
-    if aws --profile "${AWS_PROFILE}" --region "${FRONTEND_BUCKET_REGION}" s3 rb "s3://${FRONTEND_BUCKET}" --force >/dev/null; then
-      log "Deleted bucket s3://${FRONTEND_BUCKET}."
-    else
-      log "Failed to delete bucket s3://${FRONTEND_BUCKET}."
-    fi
+    log "Bucket s3://${FRONTEND_BUCKET} still exists; leaving it untouched."
   else
-    log "Bucket s3://${FRONTEND_BUCKET} not found; skipping."
+    log "Bucket s3://${FRONTEND_BUCKET} not found; nothing to clean up."
   fi
 }
 
@@ -431,6 +482,13 @@ create_cloudfront_invalidation() {
   fi
 
   log "Requested CloudFront invalidation ${invalidation_id} for distribution ${distribution_id}."
+  log "Waiting for invalidation ${invalidation_id} to complete..."
+  if aws --profile "${AWS_PROFILE}" cloudfront wait invalidation-completed \
+    --distribution-id "${distribution_id}" --id "${invalidation_id}"; then
+    log "Invalidation ${invalidation_id} completed."
+  else
+    log "Timed out or failed while waiting for invalidation ${invalidation_id}; continuing with best effort."
+  fi
   return 0
 }
 

@@ -1,6 +1,5 @@
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
 import express from 'express';
 import cors from 'cors';
 import axios from 'axios';
@@ -9,6 +8,7 @@ import swaggerJsdoc from 'swagger-jsdoc';
 import swaggerUi from 'swagger-ui-express';
 import { CostExplorerClient, GetCostAndUsageCommand } from '@aws-sdk/client-cost-explorer';
 import { fromIni } from '@aws-sdk/credential-providers';
+import { SecretsManagerClient, GetSecretValueCommand, PutSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -21,16 +21,8 @@ dotenv.config({ path: ENV_PATH });
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-const githubRepoOwner = process.env.GITHUB_REPO_OWNER || 'marcossarres';
-const githubRepoName = process.env.GITHUB_REPO_NAME || 'openai-dashboard';
-const githubWorkflowFile = process.env.GITHUB_VERSION_WORKFLOW || 'deploy-frontend.yml';
-const githubToken = process.env.GITHUB_VERSION_TOKEN || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-const versionCacheTtlMs = Number(process.env.HEALTH_VERSION_CACHE_MS || 60_000);
-
 // Mutable key — can be updated at runtime via /api/config/key
 let apiKey = process.env.OPENAI_API_KEY || '';
-let claudeApiKey = process.env.ANTHROPIC_API_KEY || '';
-let claudeOrgId = process.env.ANTHROPIC_ORG_ID || '';
 
 // Mutable AWS credentials — can be updated at runtime via /api/aws/config/credentials
 let awsAccessKeyId = process.env.AWS_ACCESS_KEY_ID || '';
@@ -45,17 +37,6 @@ function openaiHeaders() {
   return { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
 }
 
-function claudeHeaders() {
-  if (!claudeApiKey) throw new Error('ANTHROPIC_API_KEY is not configured. Use the Settings panel to add your Claude Admin key.');
-  const headers = {
-    'x-api-key': claudeApiKey,
-    'anthropic-version': '2023-06-01',
-    'User-Agent': 'MarcosCostDashboard/1.0.0 (+https://platform.claude.com)',
-  };
-  if (claudeOrgId) headers['anthropic-org-id'] = claudeOrgId;
-  return headers;
-}
-
 function dateToUnix(dateStr) {
   return Math.floor(new Date(dateStr).getTime() / 1000);
 }
@@ -65,56 +46,54 @@ function maskKey(key) {
   return key.slice(0, 14) + '...' + key.slice(-4);
 }
 
-function maskOrgId(orgId) {
-  if (!orgId || orgId.length < 8) return null;
-  return orgId.slice(0, 4) + '...' + orgId.slice(-3);
-}
-
-function persistKeyToEnv(key) {
-  let contents = existsSync(ENV_PATH) ? readFileSync(ENV_PATH, 'utf8') : '';
-  if (/^OPENAI_API_KEY=.*/m.test(contents)) {
-    contents = contents.replace(/^OPENAI_API_KEY=.*/m, `OPENAI_API_KEY=${key}`);
-  } else {
-    contents = contents.trimEnd() + `\nOPENAI_API_KEY=${key}\n`;
-  }
-  writeFileSync(ENV_PATH, contents, 'utf8');
-}
-
-function persistClaudeConfigToEnv(key, orgId) {
-  let contents = existsSync(ENV_PATH) ? readFileSync(ENV_PATH, 'utf8') : '';
-  if (key) {
-    if (/^ANTHROPIC_API_KEY=.*/m.test(contents)) {
-      contents = contents.replace(/^ANTHROPIC_API_KEY=.*/m, `ANTHROPIC_API_KEY=${key}`);
-    } else {
-      contents = contents.trimEnd() + `\nANTHROPIC_API_KEY=${key}\n`;
-    }
-  }
-  if (orgId !== undefined) {
-    if (/^ANTHROPIC_ORG_ID=.*/m.test(contents)) {
-      contents = contents.replace(/^ANTHROPIC_ORG_ID=.*/m, `ANTHROPIC_ORG_ID=${orgId}`);
-    } else {
-      contents = contents.trimEnd() + `\nANTHROPIC_ORG_ID=${orgId}\n`;
-    }
-  }
-  writeFileSync(ENV_PATH, contents, 'utf8');
-}
-
-function persistAwsToEnv(accessKeyId, secretAccessKey, region) {
-  let contents = existsSync(ENV_PATH) ? readFileSync(ENV_PATH, 'utf8') : '';
-  const replacements = { AWS_ACCESS_KEY_ID: accessKeyId, AWS_SECRET_ACCESS_KEY: secretAccessKey, AWS_REGION: region };
-  for (const [k, v] of Object.entries(replacements)) {
-    if (new RegExp(`^${k}=.*`, 'm').test(contents)) {
-      contents = contents.replace(new RegExp(`^${k}=.*`, 'm'), `${k}=${v}`);
-    } else {
-      contents = contents.trimEnd() + `\n${k}=${v}\n`;
-    }
-  }
-  writeFileSync(ENV_PATH, contents, 'utf8');
-}
-
 function maskAwsKey(key) {
   if (!key || key.length < 8) return null;
   return key.slice(0, 4) + '...' + key.slice(-4);
+}
+
+const credentialsSecretId = process.env.CREDENTIALS_SECRET_ID || 'sarrescost/backend/credentials';
+const secretsClientRegion = process.env.AWS_REGION || 'us-east-1';
+const secretsClient = credentialsSecretId ? new SecretsManagerClient({ region: secretsClientRegion }) : null;
+
+function applyCredentials(payload = {}) {
+  if (payload.openaiApiKey !== undefined) apiKey = payload.openaiApiKey;
+  if (payload.awsAccessKeyId !== undefined) awsAccessKeyId = payload.awsAccessKeyId;
+  if (payload.awsSecretAccessKey !== undefined) awsSecretAccessKey = payload.awsSecretAccessKey;
+  if (payload.awsRegion) awsRegion = payload.awsRegion;
+}
+
+function extractSecretString(data) {
+  if (data.SecretString) return data.SecretString;
+  if (data.SecretBinary) return Buffer.from(data.SecretBinary, 'base64').toString('utf8');
+  return '{}';
+}
+
+async function loadCredentialsFromSecret() {
+  if (!secretsClient || !credentialsSecretId) return;
+  try {
+    const response = await secretsClient.send(new GetSecretValueCommand({ SecretId: credentialsSecretId }));
+    const parsed = JSON.parse(extractSecretString(response) || '{}');
+    applyCredentials(parsed);
+  } catch (err) {
+    console.warn('[secrets] Unable to load credentials:', err.message);
+  }
+}
+
+async function persistCredentialsToSecret(updates = {}) {
+  if (!secretsClient || !credentialsSecretId) {
+    throw new Error('Secrets Manager is not configured for this service.');
+  }
+  const next = {
+    openaiApiKey: updates.openaiApiKey ?? apiKey,
+    awsAccessKeyId: updates.awsAccessKeyId ?? awsAccessKeyId,
+    awsSecretAccessKey: updates.awsSecretAccessKey ?? awsSecretAccessKey,
+    awsRegion: updates.awsRegion ?? awsRegion,
+  };
+  await secretsClient.send(new PutSecretValueCommand({
+    SecretId: credentialsSecretId,
+    SecretString: JSON.stringify(next),
+  }));
+  applyCredentials(next);
 }
 
 function awsCredentials() {
@@ -158,72 +137,6 @@ function transformCosts(buckets) {
   return { total_usage: totalCents, daily_costs };
 }
 
-async function fetchClaudeCostPages(startIso, endIso, limit = 31) {
-  const buckets = [];
-  let nextPage;
-  const cappedLimit = Math.min(Math.max(1, limit), 31);
-  do {
-    const params = {
-      starting_at: startIso,
-      ending_at: endIso,
-      bucket_width: '1d',
-      'group_by[]': ['description', 'workspace_id'],
-      limit: cappedLimit,
-    };
-    if (nextPage) params.page = nextPage;
-    const resp = await axios.get('https://api.anthropic.com/v1/organizations/cost_report', {
-      headers: claudeHeaders(),
-      params,
-    });
-    buckets.push(...(resp.data.data || []));
-    nextPage = resp.data.has_more ? resp.data.next_page : null;
-  } while (nextPage);
-  return buckets;
-}
-
-function toClaudeIso(dateStr, offsetDays = 0) {
-  const date = dateStr ? new Date(`${dateStr}T00:00:00Z`) : new Date();
-  if (Number.isNaN(date.getTime())) throw new Error('Invalid date range provided.');
-  date.setUTCDate(date.getUTCDate() + offsetDays);
-  return date.toISOString().split('.')[0] + 'Z';
-}
-
-function parseCostAmount(raw) {
-  if (raw == null) return 0;
-  if (typeof raw === 'number') return Math.round(raw);
-  const num = Number(raw);
-  return Number.isFinite(num) ? Math.round(num) : 0;
-}
-
-function transformClaudeCosts(buckets) {
-  let totalCents = 0;
-  const daily_costs = [];
-
-  for (const bucket of buckets) {
-    const timestamp = Math.floor(new Date(bucket.starting_at).getTime() / 1000);
-    const line_items = [];
-    for (const result of bucket.results || []) {
-      const cost = parseCostAmount(result.amount);
-      if (!cost) continue;
-      totalCents += cost;
-      const description = result.description || null;
-      const workspace = result.workspace_id ? `Workspace ${result.workspace_id.slice(0, 6)}` : null;
-      const name = description || workspace || 'Uncategorized';
-      line_items.push({
-        name,
-        cost,
-        currency: result.currency || 'USD',
-        workspace_id: result.workspace_id || null,
-      });
-    }
-    if (line_items.length) {
-      daily_costs.push({ timestamp, line_items });
-    }
-  }
-
-  return { total_cost: totalCents, daily_costs };
-}
-
 // ── Swagger ───────────────────────────────────────────────────────────────────
 
 const swaggerSpec = swaggerJsdoc({
@@ -234,23 +147,16 @@ const swaggerSpec = swaggerJsdoc({
       version: '1.0.0',
       description: 'Backend API for the Marcos OpenAI usage dashboard',
     },
-    servers: [],
+    servers: [{ url: `http://localhost:${PORT}` }],
   },
   apis: [__filename],
 });
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 
-app.use(cors({ origin: true, methods: ['GET', 'POST'] }));
+app.use(cors({ origin: 'http://localhost:5173', methods: ['GET', 'POST'] }));
 app.use(express.json());
-
-app.get('/api-docs.json', (req, res) => {
-  const proto = req.headers['x-forwarded-proto'] || req.protocol;
-  const host = req.headers['x-forwarded-host'] || req.get('host');
-  res.json({ ...swaggerSpec, servers: [{ url: `${proto}://${host}` }] });
-});
-
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(null, { swaggerUrl: '/api-docs.json' }));
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // ── Config routes ─────────────────────────────────────────────────────────────
 
@@ -313,44 +219,19 @@ app.get('/api/config/status', (_req, res) => {
  *       400:
  *         description: Missing or invalid key
  */
-app.post('/api/config/key', (req, res) => {
+app.post('/api/config/key', async (req, res) => {
   const { key } = req.body;
   if (!key || typeof key !== 'string' || !key.trim()) {
     return res.status(400).json({ error: 'key is required' });
   }
   const trimmed = key.trim();
-  apiKey = trimmed;
-  try { persistKeyToEnv(trimmed); } catch (err) {
-    console.warn('[config] Could not persist key to .env:', err.message);
+  try {
+    await persistCredentialsToSecret({ openaiApiKey: trimmed });
+  } catch (err) {
+    console.error('[config] Failed to store OpenAI key in Secrets Manager:', err.message);
+    return res.status(500).json({ error: 'Unable to store key. Please try again.' });
   }
   res.json({ ok: true, keyPreview: maskKey(trimmed) });
-});
-
-app.get('/api/claude/config/status', (_req, res) => {
-  res.json({
-    hasKey: Boolean(claudeApiKey),
-    keyPreview: maskKey(claudeApiKey),
-    hasOrgId: Boolean(claudeOrgId),
-    orgPreview: maskOrgId(claudeOrgId),
-  });
-});
-
-app.post('/api/claude/config/key', (req, res) => {
-  const { key, orgId } = req.body;
-  if (!key || typeof key !== 'string' || !key.trim()) {
-    return res.status(400).json({ error: 'key is required' });
-  }
-  const trimmedKey = key.trim();
-  claudeApiKey = trimmedKey;
-  claudeOrgId = typeof orgId === 'string' ? orgId.trim() : claudeOrgId;
-  try { persistClaudeConfigToEnv(trimmedKey, claudeOrgId || ''); } catch (err) {
-    console.warn('[claude config] Could not persist config to .env:', err.message);
-  }
-  res.json({
-    ok: true,
-    keyPreview: maskKey(claudeApiKey),
-    orgPreview: maskOrgId(claudeOrgId),
-  });
 });
 
 // ── Data routes ───────────────────────────────────────────────────────────────
@@ -570,7 +451,7 @@ app.get('/api/aws/config/status', (_req, res) => {
  *       400:
  *         description: Missing or invalid credentials
  */
-app.post('/api/aws/config/credentials', (req, res) => {
+app.post('/api/aws/config/credentials', async (req, res) => {
   const { accessKeyId, secretAccessKey, region } = req.body;
   if (!accessKeyId || typeof accessKeyId !== 'string' || !accessKeyId.trim()) {
     return res.status(400).json({ error: 'accessKeyId is required' });
@@ -581,13 +462,18 @@ app.post('/api/aws/config/credentials', (req, res) => {
   if (!region || typeof region !== 'string' || !region.trim()) {
     return res.status(400).json({ error: 'region is required' });
   }
-  awsAccessKeyId = accessKeyId.trim();
-  awsSecretAccessKey = secretAccessKey.trim();
-  awsRegion = region.trim();
-  try { persistAwsToEnv(awsAccessKeyId, awsSecretAccessKey, awsRegion); } catch (err) {
-    console.warn('[aws config] Could not persist credentials to .env:', err.message);
+  const next = {
+    awsAccessKeyId: accessKeyId.trim(),
+    awsSecretAccessKey: secretAccessKey.trim(),
+    awsRegion: region.trim(),
+  };
+  try {
+    await persistCredentialsToSecret(next);
+  } catch (err) {
+    console.error('[aws config] Failed to store credentials in Secrets Manager:', err.message);
+    return res.status(500).json({ error: 'Unable to store AWS credentials. Please try again.' });
   }
-  res.json({ ok: true, accessKeyPreview: maskAwsKey(awsAccessKeyId), region: awsRegion });
+  res.json({ ok: true, accessKeyPreview: maskAwsKey(next.awsAccessKeyId), region: next.awsRegion });
 });
 
 // ── AWS routes ────────────────────────────────────────────────────────────────
@@ -650,56 +536,10 @@ app.get('/api/aws/costs', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-app.get('/api/claude/costs', async (req, res, next) => {
-  try {
-    const { start_date, end_date } = req.query;
-    const today = new Date().toISOString().slice(0, 10);
-    const defaultStart = new Date(Date.now() - 30 * 86400 * 1000).toISOString().slice(0, 10);
-    const start = start_date || defaultStart;
-    const end = end_date || today;
-    const startIso = toClaudeIso(start, 0);
-    const endIso = toClaudeIso(end, 1); // exclusive end boundary
-    const spanMs = new Date(endIso).getTime() - new Date(startIso).getTime();
-    const totalDays = Math.max(1, Math.ceil(spanMs / (86400 * 1000)));
-    const buckets = await fetchClaudeCostPages(startIso, endIso, totalDays);
-    res.json(transformClaudeCosts(buckets));
-  } catch (err) { next(err); }
-});
+// ── Health check ─────────────────────────────────────────────────────────────
 
-// ── Health check ──────────────────────────────────────────────────────────────
-
-let cachedBackendVersion = 1;
-let lastVersionFetchTs = 0;
-
-async function resolveBackendVersion() {
-  const now = Date.now();
-  const cacheFresh = now - lastVersionFetchTs < versionCacheTtlMs;
-  if (cacheFresh && cachedBackendVersion) return cachedBackendVersion;
-
-  const apiUrl = `https://api.github.com/repos/${githubRepoOwner}/${githubRepoName}/actions/workflows/${githubWorkflowFile}/runs`;
-  const headers = {
-    'User-Agent': 'openai-dashboard-backend/1.0.0',
-    Accept: 'application/vnd.github+json',
-  };
-  if (githubToken) headers.Authorization = `Bearer ${githubToken}`;
-
-  try {
-    const resp = await axios.get(apiUrl, { params: { status: 'success', per_page: 1 }, headers });
-    const totalCount = Number(resp.data?.total_count ?? 0);
-    const version = Math.max(1, Number.isFinite(totalCount) ? totalCount : 1);
-    cachedBackendVersion = version;
-    lastVersionFetchTs = now;
-    return version;
-  } catch (err) {
-    console.warn('[Health] Unable to fetch workflow run count from GitHub:', err.message);
-    if (cachedBackendVersion) return cachedBackendVersion;
-    return 1;
-  }
-}
-
-app.get('/health', async (_req, res) => {
-  const version = await resolveBackendVersion();
-  res.json({ status: 'ok', version });
+app.get('/health', (_req, res) => {
+  res.json({ ok: true, timestamp: Date.now() });
 });
 
 // ── Error handling ────────────────────────────────────────────────────────────
@@ -715,7 +555,12 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: err.message || 'Internal server error' });
 });
 
-app.listen(PORT, () => {
-  console.log(`Backend running at http://localhost:${PORT}`);
-  if (!apiKey) console.warn('WARNING: No API key set. Open the dashboard and use Settings to configure your key.');
-});
+function bootstrap() {
+  loadCredentialsFromSecret();
+  app.listen(PORT, () => {
+    console.log(`Backend running at http://localhost:${PORT}`);
+    if (!apiKey) console.warn('WARNING: No API key set. Open the dashboard and use Settings to configure your key.');
+  });
+}
+
+bootstrap();

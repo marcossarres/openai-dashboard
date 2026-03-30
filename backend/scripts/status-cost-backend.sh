@@ -6,16 +6,18 @@
 # Environment variables (override as needed):
 #   AWS_PROFILE             AWS CLI profile (default: aws-cloudy)
 #   AWS_REGION              Region to inspect (default: us-east-1)
-#   STACK_NAME              CloudFormation stack name (default: cost-backend-formation)
+#   STACK_NAME              CloudFormation stack name (default: [project]-[domain]-cloud-formation)
 #   ECS_CLUSTER_NAME        Fallback ECS cluster name if stack output unavailable
-#                           (default: sarrescost-cluster)
-#   ECS_SERVICE_NAME        Fallback ECS service name (default: sarrescost-svc)
-#   LOG_GROUP_NAME          CloudWatch Logs group to check (default: sarrescost)
+#                           (default: [project]-[domain]-ecs-cluster)
+#   ECS_SERVICE_NAME        Fallback ECS service name (default: [project]-[domain]-ecs-service)
+#   LOG_GROUP_NAME          CloudWatch Logs group to check (default: [project]-[domain]-log-group)
 #   TARGET_GROUP_ID         Fallback target group ARN/name if stack resource lookup fails
 #   LOAD_BALANCER_ID        Fallback ALB ARN/name if stack resource lookup fails
 #   ASG_NAME                Fallback Auto Scaling group name if stack resource lookup fails
-#   ECR_REPOSITORY          ECR repository name to inspect (default: openai-dashboard-backend)
+#                           (default: [project]-[domain]-auto-scaling-group)
+#   ECR_REPOSITORY          ECR repository name to inspect (default: [project]-[domain]-ecr-repo)
 #   ECR_REGISTRY_ID         Optional registry ID override (defaults to the account of AWS_PROFILE)
+#   PROJECT                 Project prefix for derived resource names (can also be provided via --project/-p)
 #
 # Example:
 #   STACK_NAME=cost-backend-formation ./scripts/status-cost-backend.sh
@@ -24,25 +26,49 @@ set -euo pipefail
 
 AWS_PROFILE="${AWS_PROFILE:-aws-cloudy}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
-STACK_NAME="${STACK_NAME:-cost-backend-formation}"
-ECS_CLUSTER_NAME="${ECS_CLUSTER_NAME:-sarrescost-cluster}"
-ECS_SERVICE_NAME="${ECS_SERVICE_NAME:-sarrescost-svc}"
-LOG_GROUP_NAME="${LOG_GROUP_NAME:-sarrescost}"
+DEFAULT_STACK_SENTINEL="__DEFAULT_STACK_NAME__"
+DEFAULT_CLUSTER_SENTINEL="__DEFAULT_CLUSTER_NAME__"
+DEFAULT_SERVICE_SENTINEL="__DEFAULT_SERVICE_NAME__"
+DEFAULT_LOG_GROUP_SENTINEL="__DEFAULT_LOG_GROUP__"
+DEFAULT_ASG_SENTINEL="__DEFAULT_ASG_NAME__"
+DEFAULT_ECR_REPO_SENTINEL="__DEFAULT_ECR_REPO__"
+DEFAULT_FRONTEND_ROOT_SENTINEL="__DEFAULT_FRONTEND_ROOT__"
+DEFAULT_FRONTEND_DOMAIN_SENTINEL="__DEFAULT_FRONTEND_DOMAIN__"
+DEFAULT_FRONTEND_BUCKET_SENTINEL="__DEFAULT_FRONTEND_BUCKET__"
+DEFAULT_BACKEND_DOMAIN_SENTINEL="__DEFAULT_BACKEND_DOMAIN__"
+
+STACK_NAME="${STACK_NAME:-${DEFAULT_STACK_SENTINEL}}"
+ECS_CLUSTER_NAME="${ECS_CLUSTER_NAME:-${DEFAULT_CLUSTER_SENTINEL}}"
+ECS_SERVICE_NAME="${ECS_SERVICE_NAME:-${DEFAULT_SERVICE_SENTINEL}}"
+LOG_GROUP_NAME="${LOG_GROUP_NAME:-${DEFAULT_LOG_GROUP_SENTINEL}}"
 TARGET_GROUP_ID="${TARGET_GROUP_ID:-}"
 LOAD_BALANCER_ID="${LOAD_BALANCER_ID:-}"
-ASG_NAME="${ASG_NAME:-}"
-ECR_REPOSITORY="${ECR_REPOSITORY:-openai-dashboard-backend}"
+ASG_NAME="${ASG_NAME:-${DEFAULT_ASG_SENTINEL}}"
+ECR_REPOSITORY="${ECR_REPOSITORY:-${DEFAULT_ECR_REPO_SENTINEL}}"
 ECR_REGISTRY_ID="${ECR_REGISTRY_ID:-}"
 ALB_DNS_NAME=""
 SUMMARY_ENTRIES=()
 
+FRONTEND_ROOT_DOMAIN="${FRONTEND_ROOT_DOMAIN:-${DEFAULT_FRONTEND_ROOT_SENTINEL}}"
+FRONTEND_DOMAIN="${FRONTEND_DOMAIN:-${DEFAULT_FRONTEND_DOMAIN_SENTINEL}}"
+FRONTEND_BUCKET="${FRONTEND_BUCKET:-${DEFAULT_FRONTEND_BUCKET_SENTINEL}}"
+FRONTEND_BUCKET_REGION="${FRONTEND_BUCKET_REGION:-${AWS_REGION}}"
+FRONTEND_CERT_REGION="${FRONTEND_CERT_REGION:-us-east-1}"
+FRONTEND_HOSTED_ZONE_ID="${FRONTEND_HOSTED_ZONE_ID:-}"
+BACKEND_DOMAIN="${BACKEND_DOMAIN:-${DEFAULT_BACKEND_DOMAIN_SENTINEL}}"
+BACKEND_CERT_REGION="${BACKEND_CERT_REGION:-${AWS_REGION}}"
+BACKEND_HOSTED_ZONE_ID="${BACKEND_HOSTED_ZONE_ID:-}"
+SECURITY_GROUP_ID="${SECURITY_GROUP_ID:-}"
+
 usage() {
   cat <<USAGE
-Usage: $(basename "$0") --domain <root-domain>
+Usage: $(basename "$0") --domain <root-domain> --project <name>
 
 Required arguments:
   --domain, -d    Root domain (e.g., sarres.com.br). The script will verify both the backend
-                  stack and the frontend resources created for costly.<root-domain>.
+                  stack and the frontend resources created for <project>.<root-domain>.
+  --project, -p   Project prefix (alphanumeric + dashes). Used together with the domain to
+                  derive the resource names for this deployment.
 
 Environment overrides:
   FRONTEND_BUCKET_REGION, FRONTEND_CERT_REGION, FRONTEND_HOSTED_ZONE_ID,
@@ -51,6 +77,7 @@ USAGE
 }
 
 DOMAIN="${DOMAIN:-}"
+PROJECT="${PROJECT:-}"
 
 parse_args() {
   while [[ $# -gt 0 ]]; do
@@ -62,6 +89,15 @@ parse_args() {
           exit 1
         fi
         DOMAIN="$2"
+        shift 2
+        ;;
+      --project|-p)
+        if [[ -z "${2:-}" ]]; then
+          printf 'Missing value for %s\n' "$1" >&2
+          usage
+          exit 1
+        fi
+        PROJECT="$2"
         shift 2
         ;;
       --help|-h)
@@ -95,16 +131,63 @@ if [[ -z "${DOMAIN}" ]]; then
   exit 1
 fi
 
-FRONTEND_ROOT_DOMAIN="${FRONTEND_ROOT_DOMAIN:-${DOMAIN}}"
-FRONTEND_DOMAIN="${FRONTEND_DOMAIN:-costly.${DOMAIN}}"
-FRONTEND_BUCKET="${FRONTEND_BUCKET:-costly.${DOMAIN}}"
-FRONTEND_BUCKET_REGION="${FRONTEND_BUCKET_REGION:-${AWS_REGION}}"
-FRONTEND_CERT_REGION="${FRONTEND_CERT_REGION:-us-east-1}"
-FRONTEND_HOSTED_ZONE_ID="${FRONTEND_HOSTED_ZONE_ID:-}"
-BACKEND_DOMAIN="${BACKEND_DOMAIN:-api.${DOMAIN}}"
-BACKEND_CERT_REGION="${BACKEND_CERT_REGION:-${AWS_REGION}}"
-BACKEND_HOSTED_ZONE_ID="${BACKEND_HOSTED_ZONE_ID:-}"
-SECURITY_GROUP_ID="${SECURITY_GROUP_ID:-}"
+if [[ -z "${PROJECT}" ]]; then
+  printf 'PROJECT parameter is required.\n' >&2
+  usage
+  exit 1
+fi
+
+DOMAIN_NORMALIZED="$(printf '%s' "${DOMAIN}" | tr '[:upper:]' '[:lower:]')"
+DOMAIN_DNS_LABEL="$(printf '%s' "${DOMAIN_NORMALIZED}" | sed -E 's/[^a-z0-9.-]+/-/g' | sed -E 's/-+/-/g' | sed -E 's/^-+|-+$//g')"
+if [[ -z "${DOMAIN_DNS_LABEL}" ]]; then
+  printf 'DOMAIN must contain at least one valid character (letters, numbers, dashes, dots).\n' >&2
+  exit 1
+fi
+DOMAIN_PREFIX_SEGMENT="$(printf '%s' "${DOMAIN_DNS_LABEL}" | tr '.' '-' | sed -E 's/-+/-/g' | sed -E 's/^-+|-+$//g')"
+if [[ -z "${DOMAIN_PREFIX_SEGMENT}" ]]; then
+  printf 'DOMAIN prefix segment empty after normalization; choose a valid domain.\n' >&2
+  exit 1
+fi
+
+PROJECT_PREFIX="$(printf '%s' "${PROJECT}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g' | sed -E 's/^-+|-+$//g')"
+if [[ -z "${PROJECT_PREFIX}" ]]; then
+  printf 'PROJECT must contain at least one alphanumeric character (letters, numbers, dashes).\n' >&2
+  exit 1
+fi
+
+RESOURCE_PREFIX="${PROJECT_PREFIX}-${DOMAIN_PREFIX_SEGMENT}"
+FRIENDLY_NAME_PREFIX="${PROJECT_PREFIX}-${DOMAIN_DNS_LABEL}"
+
+if [[ "${STACK_NAME}" == "${DEFAULT_STACK_SENTINEL}" ]]; then
+  STACK_NAME="${RESOURCE_PREFIX}-cloud-formation"
+fi
+if [[ "${ECS_CLUSTER_NAME}" == "${DEFAULT_CLUSTER_SENTINEL}" ]]; then
+  ECS_CLUSTER_NAME="${RESOURCE_PREFIX}-ecs-cluster"
+fi
+if [[ "${ECS_SERVICE_NAME}" == "${DEFAULT_SERVICE_SENTINEL}" ]]; then
+  ECS_SERVICE_NAME="${RESOURCE_PREFIX}-ecs-service"
+fi
+if [[ "${LOG_GROUP_NAME}" == "${DEFAULT_LOG_GROUP_SENTINEL}" ]]; then
+  LOG_GROUP_NAME="${RESOURCE_PREFIX}-log-group"
+fi
+if [[ "${ASG_NAME}" == "${DEFAULT_ASG_SENTINEL}" ]]; then
+  ASG_NAME="${RESOURCE_PREFIX}-auto-scaling-group"
+fi
+if [[ "${ECR_REPOSITORY}" == "${DEFAULT_ECR_REPO_SENTINEL}" ]]; then
+  ECR_REPOSITORY="${FRIENDLY_NAME_PREFIX}-ecr-repo"
+fi
+if [[ "${FRONTEND_ROOT_DOMAIN}" == "${DEFAULT_FRONTEND_ROOT_SENTINEL}" ]]; then
+  FRONTEND_ROOT_DOMAIN="${DOMAIN_DNS_LABEL}"
+fi
+if [[ "${FRONTEND_DOMAIN}" == "${DEFAULT_FRONTEND_DOMAIN_SENTINEL}" ]]; then
+  FRONTEND_DOMAIN="${PROJECT_PREFIX}.${FRONTEND_ROOT_DOMAIN}"
+fi
+if [[ "${FRONTEND_BUCKET}" == "${DEFAULT_FRONTEND_BUCKET_SENTINEL}" ]]; then
+  FRONTEND_BUCKET="${FRONTEND_DOMAIN}"
+fi
+if [[ "${BACKEND_DOMAIN}" == "${DEFAULT_BACKEND_DOMAIN_SENTINEL}" ]]; then
+  BACKEND_DOMAIN="api.${PROJECT_PREFIX}.${FRONTEND_ROOT_DOMAIN}"
+fi
 
 aws_cli() {
   aws --profile "${AWS_PROFILE}" --region "${AWS_REGION}" "$@"
@@ -496,7 +579,7 @@ report_cloudfront_distribution() {
     --query "DistributionList.Items[?Aliases.Items && contains(Aliases.Items, '${FRONTEND_DOMAIN}')].[Id,Status,Enabled,DomainName]" \
     --output text 2>/dev/null || echo "")
   if [[ -z "${info}" || "${info}" == "None" ]]; then
-    component_status "CFD" "CloudFront (costly.${DOMAIN})" "not created" "No distribution with alias ${FRONTEND_DOMAIN}." "MISSING"
+    component_status "CFD" "CloudFront (${FRONTEND_DOMAIN})" "not created" "No distribution with alias ${FRONTEND_DOMAIN}." "MISSING"
     return
   fi
   local dist_id dist_status dist_enabled dist_domain
@@ -507,7 +590,7 @@ report_cloudfront_distribution() {
   elif [[ "${dist_status}" == "Deployed" && "${dist_enabled}" == "False" ]]; then
     state="error"
   fi
-  component_status "CFD" "CloudFront (costly.${DOMAIN})" "${state}" "id=${dist_id}, status=${dist_status}, enabled=${dist_enabled}, domain=${dist_domain}" "${dist_status}"
+  component_status "CFD" "CloudFront (${FRONTEND_DOMAIN})" "${state}" "id=${dist_id}, status=${dist_status}, enabled=${dist_enabled}, domain=${dist_domain}" "${dist_status}"
 }
 
 report_route53_alias() {

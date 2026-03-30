@@ -13,11 +13,12 @@
 #   DESIRED_COUNT      ECS service desired count (default: 1)
 #   CONTAINER_PORT     Container/host port exposed through the ALB (default: 3001)
 #   POLL_INTERVAL_SECONDS  Seconds between CloudFormation event polls (default: 10)
+#   PROJECT            Project prefix for AWS resource names (can also be provided via --project/-p)
 #
 # Example:
 #   STACK_NAME=cost-backend-formation \
 #   IMAGE_URI=915759771410.dkr.ecr.us-east-1.amazonaws.com/openai-dashboard-backend@sha256:... \
-#   ./scripts/deploy-cost-backend.sh
+#   ./scripts/deploy-cost-backend.sh --domain moneyclip.com.br --project cost
 
 set -euo pipefail
 
@@ -31,10 +32,12 @@ WORKSPACE_ROOT="$(cd -- "${REPO_ROOT}/.." && pwd)"
 
 AWS_PROFILE="${AWS_PROFILE:-aws-cloudy}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
-STACK_NAME="${STACK_NAME:-cost-backend-formation}"
+DEFAULT_STACK_SENTINEL="__DEFAULT_STACK_NAME__"
+STACK_NAME="${STACK_NAME:-${DEFAULT_STACK_SENTINEL}}"
 TEMPLATE_FILE="${TEMPLATE_FILE:-${WORKSPACE_ROOT}/infra/sarrescost-ecs.yaml}"
 DEFAULT_ECR_REGISTRY="915759771410.dkr.ecr.us-east-1.amazonaws.com"
-DEFAULT_ECR_REPOSITORY="openai-dashboard-backend"
+DEFAULT_ECR_REPOSITORY_SENTINEL="__DEFAULT_ECR_REPOSITORY__"
+DEFAULT_ECR_REPOSITORY="${DEFAULT_ECR_REPOSITORY:-${DEFAULT_ECR_REPOSITORY_SENTINEL}}"
 DEFAULT_ECR_IMAGE_TAG="latest"
 DEFAULT_IMAGE_URI_PLACEHOLDER="__AUTO_ECR_LATEST__"
 IMAGE_URI="${IMAGE_URI:-${DEFAULT_IMAGE_URI_PLACEHOLDER}}"
@@ -52,11 +55,13 @@ ENVIRONMENT="${ENVIRONMENT:-prod}"
 
 usage() {
   cat <<USAGE
-Usage: $(basename "$0") --domain <root-domain>
+Usage: $(basename "$0") --domain <root-domain> --project <name>
 
 Required arguments:
   --domain, -d    Root domain (e.g., sarres.com.br). Frontend assets will be
-                  deployed to costly.<root-domain>.
+                  deployed to <project>.<root-domain> (e.g., cost.sarres.com.br).
+  --project, -p   Project prefix (alphanumeric + dashes). Used to name all AWS
+                  resources (cluster, service, load balancer, etc.).
 
 Environment overrides:
   Set the variables documented at the top of this script (AWS_PROFILE, STACK_NAME,
@@ -65,6 +70,7 @@ USAGE
 }
 
 DOMAIN="${DOMAIN:-}"
+PROJECT="${PROJECT:-}"
 
 parse_args() {
   while [[ $# -gt 0 ]]; do
@@ -76,6 +82,15 @@ parse_args() {
           exit 1
         fi
         DOMAIN="$2"
+        shift 2
+        ;;
+      --project|-p)
+        if [[ -z "${2:-}" ]]; then
+          log "Missing value for $1."
+          usage
+          exit 1
+        fi
+        PROJECT="$2"
         shift 2
         ;;
       --help|-h)
@@ -109,10 +124,52 @@ if [[ -z "${DOMAIN}" ]]; then
   exit 1
 fi
 
+DOMAIN_NORMALIZED="$(printf '%s' "${DOMAIN}" | tr '[:upper:]' '[:lower:]')"
+DOMAIN_DNS_LABEL="$(printf '%s' "${DOMAIN_NORMALIZED}" | sed -E 's/[^a-z0-9.-]+/-/g' | sed -E 's/-+/-/g' | sed -E 's/^-+|-+$//g')"
+if [[ -z "${DOMAIN_DNS_LABEL}" ]]; then
+  log "DOMAIN must contain at least one valid character (letters, numbers, dashes, or dots)."
+  exit 1
+fi
+if [[ "${DOMAIN}" != "${DOMAIN_DNS_LABEL}" ]]; then
+  log "Normalized domain to '${DOMAIN_DNS_LABEL}'."
+fi
+DOMAIN_PREFIX_SEGMENT="$(printf '%s' "${DOMAIN_DNS_LABEL}" | tr '.' '-' | sed -E 's/-+/-/g' | sed -E 's/^-+|-+$//g')"
+if [[ -z "${DOMAIN_PREFIX_SEGMENT}" ]]; then
+  log "DOMAIN prefix segment is empty after normalization; please choose a valid domain."
+  exit 1
+fi
+
+if [[ -z "${PROJECT}" ]]; then
+  log "PROJECT parameter is required."
+  usage
+  exit 1
+fi
+
+PROJECT_PREFIX="$(printf '%s' "${PROJECT}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g' | sed -E 's/^-+|-+$//g')"
+if [[ -z "${PROJECT_PREFIX}" ]]; then
+  log "PROJECT must contain at least one alphanumeric character (letters, numbers, dashes)."
+  exit 1
+fi
+if [[ "${PROJECT}" != "${PROJECT_PREFIX}" ]]; then
+  log "Normalized project prefix to '${PROJECT_PREFIX}' to satisfy AWS naming rules."
+fi
+
+RESOURCE_PREFIX="${PROJECT_PREFIX}-${DOMAIN_PREFIX_SEGMENT}"
+FRIENDLY_NAME_PREFIX="${PROJECT_PREFIX}-${DOMAIN_DNS_LABEL}"
+log "Resource prefix set to '${RESOURCE_PREFIX}'."
+
+if [[ "${STACK_NAME}" == "${DEFAULT_STACK_SENTINEL}" ]]; then
+  STACK_NAME="${RESOURCE_PREFIX}-cloud-formation"
+fi
+
+if [[ "${DEFAULT_ECR_REPOSITORY}" == "${DEFAULT_ECR_REPOSITORY_SENTINEL}" ]]; then
+  DEFAULT_ECR_REPOSITORY="${FRIENDLY_NAME_PREFIX}-ecr-repo"
+fi
+
 FRONTEND_ENABLED="${FRONTEND_ENABLED:-true}"
-FRONTEND_ROOT_DOMAIN="${FRONTEND_ROOT_DOMAIN:-${DOMAIN}}"
-FRONTEND_DOMAIN="${FRONTEND_DOMAIN:-costly.${DOMAIN}}"
-FRONTEND_BUCKET="${FRONTEND_BUCKET:-costly.${DOMAIN}}"
+FRONTEND_ROOT_DOMAIN="${FRONTEND_ROOT_DOMAIN:-${DOMAIN_DNS_LABEL}}"
+FRONTEND_DOMAIN="${FRONTEND_DOMAIN:-${PROJECT_PREFIX}.${FRONTEND_ROOT_DOMAIN}}"
+FRONTEND_BUCKET="${FRONTEND_BUCKET:-${FRONTEND_DOMAIN}}"
 FRONTEND_BUCKET_REGION="${FRONTEND_BUCKET_REGION:-${AWS_REGION}}"
 FRONTEND_DIR="${FRONTEND_DIR:-${REPO_ROOT}/frontend}"
 FRONTEND_DIST_DIR="${FRONTEND_DIST_DIR:-${FRONTEND_DIR}/dist}"
@@ -125,7 +182,7 @@ FRONTEND_DISTRIBUTION_CREATED="false"
 FRONTEND_FORCE_REDEPLOY="${FRONTEND_FORCE_REDEPLOY:-false}"
 CLOUDFRONT_HOSTED_ZONE_ID="Z2FDTNDATAQYW2"
 ALLOW_ACM_REISSUE="${ALLOW_ACM_REISSUE:-false}"
-BACKEND_DOMAIN="${BACKEND_DOMAIN:-api.${DOMAIN}}"
+BACKEND_DOMAIN="${BACKEND_DOMAIN:-api.${PROJECT_PREFIX}.${DOMAIN_DNS_LABEL}}"
 BACKEND_CERT_REGION="${BACKEND_CERT_REGION:-${AWS_REGION}}"
 BACKEND_CERT_ARN="${BACKEND_CERT_ARN:-}"
 BACKEND_HOSTED_ZONE_ID="${BACKEND_HOSTED_ZONE_ID:-}"
@@ -527,7 +584,7 @@ log_zone_delegation_instructions() {
     [[ -z "${ns_entry}" ]] && continue
     log "  - ${ns_entry%.}"
   done <<<"${ns_records}"
-  log "After the registrar update propagates (often a few hours), rerun this script so costly.sarres.com.br resolves through Route 53."
+  log "After the registrar update propagates (often a few hours), rerun this script so ${FRONTEND_DOMAIN} resolves through Route 53."
 }
 
 publish_dns_validation_records() {
@@ -725,37 +782,12 @@ ensure_backend_certificate() {
   return 0
 }
 
-build_frontend_assets() {
-  if [[ ! -d "${FRONTEND_DIR}" ]]; then
-    log "Frontend directory ${FRONTEND_DIR} not found; skipping frontend deployment."
-    return 1
-  fi
-  if ! command -v npm >/dev/null 2>&1; then
-    log "npm command not available; cannot build frontend."
-    return 1
-  fi
-  log "Installing frontend dependencies in ${FRONTEND_DIR}..."
-  npm --prefix "${FRONTEND_DIR}" install >/dev/null
-  log "Building frontend assets (npm run build)..."
-  npm --prefix "${FRONTEND_DIR}" run build >/dev/null
-  if [[ ! -d "${FRONTEND_DIST_DIR}" ]]; then
-    log "Frontend build output ${FRONTEND_DIST_DIR} not found after build."
-    return 1
-  fi
-  return 0
-}
-
 ensure_frontend_bucket() {
   if aws --profile "${AWS_PROFILE}" --region "${FRONTEND_BUCKET_REGION}" s3api head-bucket --bucket "${FRONTEND_BUCKET}" >/dev/null 2>&1; then
-    log "Using existing S3 bucket s3://${FRONTEND_BUCKET}."
+    log "Confirmed existing S3 bucket s3://${FRONTEND_BUCKET}."
   else
-    log "Creating S3 bucket s3://${FRONTEND_BUCKET} (region ${FRONTEND_BUCKET_REGION})..."
-    if [[ "${FRONTEND_BUCKET_REGION}" == "us-east-1" ]]; then
-      aws --profile "${AWS_PROFILE}" --region "${FRONTEND_BUCKET_REGION}" s3api create-bucket --bucket "${FRONTEND_BUCKET}" >/dev/null
-    else
-      aws --profile "${AWS_PROFILE}" --region "${FRONTEND_BUCKET_REGION}" s3api create-bucket --bucket "${FRONTEND_BUCKET}" \
-        --create-bucket-configuration LocationConstraint="${FRONTEND_BUCKET_REGION}" >/dev/null
-    fi
+    log "S3 bucket s3://${FRONTEND_BUCKET} not found. Please create it (or set FRONTEND_BUCKET) before rerunning."
+    return 1
   fi
 
   log "Configuring public website hosting for s3://${FRONTEND_BUCKET}..."
@@ -781,16 +813,6 @@ POLICY
 
   aws --profile "${AWS_PROFILE}" --region "${FRONTEND_BUCKET_REGION}" s3 website "s3://${FRONTEND_BUCKET}/" \
     --index-document index.html --error-document index.html >/dev/null
-  return 0
-}
-
-sync_frontend_assets_to_s3() {
-  if [[ ! -d "${FRONTEND_DIST_DIR}" ]]; then
-    log "Frontend dist directory ${FRONTEND_DIST_DIR} not found; ensure the build completed."
-    return 1
-  fi
-  log "Syncing frontend assets to s3://${FRONTEND_BUCKET}..."
-  aws --profile "${AWS_PROFILE}" --region "${FRONTEND_BUCKET_REGION}" s3 sync "${FRONTEND_DIST_DIR}/" "s3://${FRONTEND_BUCKET}/" --delete >/dev/null
   return 0
 }
 
@@ -822,10 +844,10 @@ frontend_already_provisioned() {
 }
 
 ensure_cloudfront_distribution() {
-  if find_frontend_distribution; then
-    log "Reusing existing CloudFront distribution ${FRONTEND_DISTRIBUTION_ID} (${FRONTEND_DISTRIBUTION_DOMAIN})."
-    FRONTEND_DISTRIBUTION_CREATED="false"
-    return 0
+if find_frontend_distribution; then
+  log "Reusing existing CloudFront distribution ${FRONTEND_DISTRIBUTION_ID} (${FRONTEND_DISTRIBUTION_DOMAIN})."
+  FRONTEND_DISTRIBUTION_CREATED="false"
+  return 0
   fi
 
   log "Creating CloudFront distribution for ${FRONTEND_DOMAIN}..."
@@ -1084,18 +1106,7 @@ deploy_frontend_stack() {
     log "ACM certificate for ${FRONTEND_DOMAIN} could not be validated; skipping frontend deployment."
     return 0
   fi
-  if ! build_frontend_assets; then
-    log "Frontend build failed; aborting frontend deployment."
-    return 1
-  fi
-  if ! ensure_frontend_bucket; then
-    log "Failed to prepare S3 bucket ${FRONTEND_BUCKET}."
-    return 1
-  fi
-  if ! sync_frontend_assets_to_s3; then
-    log "Failed to upload frontend assets to s3://${FRONTEND_BUCKET}."
-    return 1
-  fi
+  log "Skipping frontend asset build/upload to keep s3://${FRONTEND_BUCKET} unchanged."
   if ! ensure_cloudfront_distribution; then
     log "CloudFront distribution setup failed."
     return 1
@@ -1111,6 +1122,14 @@ deploy_frontend_stack() {
   flush_local_dns_cache || true
   return 0
 }
+
+if [[ "${FRONTEND_ENABLED}" == "true" ]]; then
+  log "Verifying required frontend S3 bucket before continuing..."
+  if ! ensure_frontend_bucket; then
+    log "Frontend bucket ${FRONTEND_BUCKET} is missing; aborting deploy early."
+    exit 1
+  fi
+fi
 
 if [[ "${IMAGE_URI}" == "${DEFAULT_IMAGE_URI_PLACEHOLDER}" ]]; then
   if ! IMAGE_URI="$(resolve_latest_image_uri)"; then
@@ -1146,6 +1165,8 @@ cat <<DEPLOY_PARAMS
 Deploying stack: ${STACK_NAME}
 Template:       ${TEMPLATE_FILE}
 Region:         ${AWS_REGION}
+Project:        ${PROJECT_PREFIX}
+Resource prefix:${RESOURCE_PREFIX}
 Image URI:      ${IMAGE_URI}
 Backend cert:   ${BACKEND_CERT_ARN}
 Release tag:    ${RELEASE_TAG}
@@ -1163,6 +1184,8 @@ run_deploy() {
     --template-file "${TEMPLATE_FILE}" \
     --capabilities CAPABILITY_NAMED_IAM \
     --parameter-overrides \
+      ProjectPrefix="${RESOURCE_PREFIX}" \
+      FriendlyNamePrefix="${FRIENDLY_NAME_PREFIX}" \
       VpcId="${VPC_ID}" \
       PublicSubnets="${PUBLIC_SUBNETS}" \
       DefaultSecurityGroupId="${SECURITY_GROUP_ID}" \
@@ -1202,10 +1225,6 @@ log "  Cluster: ${CLUSTER_NAME:-n/a}"
 log "  Service: ${SERVICE_ARN:-n/a}"
 log "  ALB DNS: ${LOAD_BALANCER_DNS:-n/a}"
 
-if ! ensure_backend_route53_alias "${LOAD_BALANCER_DNS}" "${ALB_CANONICAL_ZONE_ID}"; then
-  log "Backend Route 53 alias update failed; verify DNS for ${BACKEND_DOMAIN} manually."
-fi
-
 SERVICE_NAME="${SERVICE_ARN##*/}"
 if [[ -n "${CLUSTER_NAME}" && -n "${SERVICE_NAME}" && "${SERVICE_NAME}" != "None" ]]; then
   log "ECS service details (cluster=${CLUSTER_NAME}, service=${SERVICE_NAME}):"
@@ -1232,6 +1251,10 @@ if [[ -n "${ALB_ARN}" && "${ALB_ARN}" != "None" ]]; then
 fi
 if [[ -z "${LOAD_BALANCER_DNS}" || "${LOAD_BALANCER_DNS}" == "None" ]]; then
   LOAD_BALANCER_DNS="${ALB_DNS_FROM_API:-}"
+fi
+
+if ! ensure_backend_route53_alias "${LOAD_BALANCER_DNS}" "${ALB_CANONICAL_ZONE_ID}"; then
+  log "Backend Route 53 alias update failed; verify DNS for ${BACKEND_DOMAIN} manually."
 fi
 
 ASG_NAME=$(STACK_RESOURCE SarrescostAutoScalingGroup || true)
