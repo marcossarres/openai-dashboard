@@ -26,19 +26,19 @@ export default function CostSummary({ subscription, costsData }) {
       {cards.map(({ label, value, sub, accent }) => (
         <div
           key={label}
-          className={`rounded-xl border p-5 ${
+          className={`rounded-xl border p-5 transition-colors ${
             accent
-              ? 'bg-gradient-to-br from-[#0d2420] to-[#141414] border-[#1a4a3a]'
-              : 'bg-[#141414] border-[#222]'
+              ? 'bg-gradient-to-br from-[#dff8f1] to-[#f3fbf8] border-[#b5e8db] dark:from-[#0d2420] dark:to-[#141414] dark:border-[#1a4a3a]'
+              : 'bg-[var(--bg-surface-2)] border-[var(--border)]'
           }`}
         >
-          <p className="text-xs font-semibold text-[#555] uppercase tracking-wider mb-2.5">
+          <p className="text-xs font-semibold text-[var(--text-3)] uppercase tracking-wider mb-2.5">
             {label}
           </p>
-          <p className={`text-3xl font-bold tracking-tight leading-none ${accent ? 'text-[#00d4aa]' : 'text-white'}`}>
+          <p className={`text-3xl font-bold tracking-tight leading-none ${accent ? 'text-[#00d4aa]' : 'text-[var(--text-1)]'}`}>
             {value}
           </p>
-          <p className="text-xs text-[#444] mt-1.5">{sub}</p>
+          <p className="text-xs text-[var(--text-2)] mt-1.5">{sub}</p>
         </div>
       ))}
     </div>

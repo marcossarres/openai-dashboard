@@ -36,8 +36,15 @@ const CustomTooltip = ({ active, payload, accentColor }) => {
   if (!active || !payload?.length) return null;
   const { model, cost } = payload[0].payload;
   return (
-    <div className="bg-[#1c1c1c] border border-[#333] rounded-md px-3.5 py-2.5 text-sm text-gray-200 max-w-[240px]">
-      <p className="m-0 mb-1 text-[#888] break-words">{model}</p>
+    <div
+      className="rounded-md px-3.5 py-2.5 text-sm max-w-[240px]"
+      style={{
+        background: 'var(--tooltip-bg)',
+        border: `1px solid var(--tooltip-bdr)`,
+        color: 'var(--tooltip-text)'
+      }}
+    >
+      <p className="m-0 mb-1 text-[var(--tooltip-sub)] break-words">{model}</p>
       <p className="m-0 font-semibold" style={{ color: accentColor }}>${cost.toFixed(4)}</p>
     </div>
   );
@@ -48,7 +55,7 @@ export default function ModelBreakdown({ costsData, accentColor = '#00d4aa' }) {
 
   if (!data.length) {
     return (
-      <div className="bg-[#141414] border border-[#222] rounded-xl p-10 text-center text-[#444] text-sm">
+      <div className="bg-[var(--bg-surface-2)] border border-[var(--border)] rounded-xl p-10 text-center text-[var(--text-2)] text-sm">
         No model cost data available for this period.
       </div>
     );
@@ -57,13 +64,13 @@ export default function ModelBreakdown({ costsData, accentColor = '#00d4aa' }) {
   const chartData = data.map((d) => ({ ...d, shortModel: truncate(d.model) }));
 
   return (
-    <div className="bg-[#141414] border border-[#222] rounded-xl px-4 pt-6 pb-6 flex flex-col gap-6">
+    <div className="bg-[var(--bg-surface-2)] border border-[var(--border)] rounded-xl px-4 pt-6 pb-6 flex flex-col gap-6 transition-colors">
       <ResponsiveContainer width="100%" height={280}>
         <BarChart data={chartData} margin={{ top: 4, right: 16, left: 0, bottom: 40 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#1e1e1e" vertical={false} />
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" vertical={false} />
           <XAxis
             dataKey="shortModel"
-            tick={{ fill: '#555', fontSize: 11 }}
+            tick={{ fill: 'var(--chart-axis)', fontSize: 11 }}
             tickLine={false}
             axisLine={false}
             angle={-35}
@@ -71,13 +78,13 @@ export default function ModelBreakdown({ costsData, accentColor = '#00d4aa' }) {
             interval={0}
           />
           <YAxis
-            tick={{ fill: '#555', fontSize: 12 }}
+            tick={{ fill: 'var(--chart-axis)', fontSize: 12 }}
             tickLine={false}
             axisLine={false}
             tickFormatter={(v) => `$${v}`}
             width={52}
           />
-          <Tooltip content={<CustomTooltip accentColor={accentColor} />} cursor={{ fill: '#1c1c1c' }} />
+          <Tooltip content={<CustomTooltip accentColor={accentColor} />} cursor={{ fill: 'var(--bg-surface-3)' }} />
           <Bar dataKey="cost" radius={[4, 4, 0, 0]}>
             {chartData.map((_, index) => (
               <Cell key={index} fill={PALETTE[index % PALETTE.length]} fillOpacity={0.85} />
@@ -89,7 +96,7 @@ export default function ModelBreakdown({ costsData, accentColor = '#00d4aa' }) {
       {/* Legend */}
       <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
         {data.map(({ model, cost }, index) => (
-          <div key={model} className="flex items-center gap-2 text-xs text-[#888]">
+          <div key={model} className="flex items-center gap-2 text-xs text-[var(--text-3)]">
             <span
               className="w-2.5 h-2.5 rounded-sm shrink-0"
               style={{ background: PALETTE[index % PALETTE.length] }}
@@ -97,7 +104,7 @@ export default function ModelBreakdown({ costsData, accentColor = '#00d4aa' }) {
             <span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap" title={model}>
               {model}
             </span>
-            <span className="text-gray-200 font-semibold shrink-0">${cost.toFixed(4)}</span>
+            <span className="text-[var(--text-1)] font-semibold shrink-0">${cost.toFixed(4)}</span>
           </div>
         ))}
       </div>

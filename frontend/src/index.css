@@ -2,20 +2,64 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Theme tokens ──────────────────────────────────────────────────────────── */
+:root {
+  --bg:           #f5f7fa;
+  --bg-surface:   #ffffff;
+  --bg-surface-2: #f0f2f5;
+  --bg-surface-3: #e8eaed;
+  --border:       #e0e3e8;
+  --border-2:     #cdd1d8;
+  --text-1:       #111318;
+  --text-2:       #5f6878;
+  --text-3:       #9aa3b0;
+  --chart-grid:   #e8eaed;
+  --chart-axis:   #9aa3b0;
+  --chart-cursor: #e0e3e8;
+  --tooltip-bg:   #ffffff;
+  --tooltip-bdr:  #e0e3e8;
+  --tooltip-text: #111318;
+  --tooltip-sub:  #5f6878;
+}
+
+.dark {
+  --bg:           #0f0f0f;
+  --bg-surface:   #111111;
+  --bg-surface-2: #1a1a1a;
+  --bg-surface-3: #141414;
+  --border:       #222222;
+  --border-2:     #333333;
+  --text-1:       #e5e7eb;
+  --text-2:       #6b7280;
+  --text-3:       #4b5563;
+  --chart-grid:   #1e1e1e;
+  --chart-axis:   #555555;
+  --chart-cursor: #333333;
+  --tooltip-bg:   #1c1c1c;
+  --tooltip-bdr:  #333333;
+  --tooltip-text: #e5e7eb;
+  --tooltip-sub:  #888888;
+}
+
+/* ── Base ──────────────────────────────────────────────────────────────────── */
 @layer base {
+  html {
+    transition: color 0.15s, background-color 0.15s;
+  }
   body {
-    @apply bg-[#0f0f0f] text-gray-200 m-0;
+    background: var(--bg);
+    color: var(--text-1);
+    margin: 0;
     font-family: 'Inter', 'Segoe UI', sans-serif;
   }
-  * {
-    box-sizing: border-box;
-  }
+  * { box-sizing: border-box; }
   input[type='date']::-webkit-calendar-picker-indicator {
     filter: invert(0.5);
     cursor: pointer;
   }
 }
 
+/* ── Utilities ─────────────────────────────────────────────────────────────── */
 @keyframes spin {
   to { transform: rotate(360deg); }
 }

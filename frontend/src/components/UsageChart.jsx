@@ -21,8 +21,15 @@ function buildChartData(costsData) {
 const CustomTooltip = ({ active, payload, label, accentColor }) => {
   if (!active || !payload?.length) return null;
   return (
-    <div className="bg-[#1c1c1c] border border-[#333] rounded-md px-3.5 py-2.5 text-sm text-gray-200">
-      <p className="m-0 mb-1 text-[#888]">{label}</p>
+    <div
+      className="rounded-md px-3.5 py-2.5 text-sm"
+      style={{
+        background: 'var(--tooltip-bg)',
+        border: `1px solid var(--tooltip-bdr)`,
+        color: 'var(--tooltip-text)'
+      }}
+    >
+      <p className="m-0 mb-1 text-[var(--tooltip-sub)]">{label}</p>
       <p className="m-0 font-semibold" style={{ color: accentColor }}>${payload[0].value.toFixed(4)}</p>
     </div>
   );
@@ -33,7 +40,7 @@ export default function UsageChart({ costsData, accentColor = '#00d4aa', gradien
 
   if (!data.length) {
     return (
-      <div className="bg-[#141414] border border-[#222] rounded-xl p-10 text-center text-[#444] text-sm">
+      <div className="bg-[var(--bg-surface-2)] border border-[var(--border)] rounded-xl p-10 text-center text-[var(--text-2)] text-sm">
         No daily cost data available for this period.
       </div>
     );
@@ -44,7 +51,7 @@ export default function UsageChart({ costsData, accentColor = '#00d4aa', gradien
   const gradId = `costGrad-${gradientId}`;
 
   return (
-    <div className="bg-[#141414] border border-[#222] rounded-xl px-4 pt-6 pb-4">
+    <div className="bg-[var(--bg-surface-2)] border border-[var(--border)] rounded-xl px-4 pt-6 pb-4 transition-colors">
       <ResponsiveContainer width="100%" height={280}>
         <AreaChart data={data} margin={{ top: 4, right: 16, left: 0, bottom: 0 }}>
           <defs>
@@ -53,22 +60,22 @@ export default function UsageChart({ costsData, accentColor = '#00d4aa', gradien
               <stop offset="95%" stopColor={accentColor} stopOpacity={0} />
             </linearGradient>
           </defs>
-          <CartesianGrid strokeDasharray="3 3" stroke="#1e1e1e" vertical={false} />
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" vertical={false} />
           <XAxis
             dataKey="date"
-            tick={{ fill: '#555', fontSize: 12 }}
+            tick={{ fill: 'var(--chart-axis)', fontSize: 12 }}
             tickLine={false}
             axisLine={false}
             interval={tickInterval}
           />
           <YAxis
-            tick={{ fill: '#555', fontSize: 12 }}
+            tick={{ fill: 'var(--chart-axis)', fontSize: 12 }}
             tickLine={false}
             axisLine={false}
             tickFormatter={(v) => `$${v}`}
             width={52}
           />
-          <Tooltip content={<CustomTooltip accentColor={accentColor} />} cursor={{ stroke: '#333' }} />
+          <Tooltip content={<CustomTooltip accentColor={accentColor} />} cursor={{ stroke: 'var(--chart-cursor)' }} />
           <Area
             type="monotone"
             dataKey="cost"
@@ -76,7 +83,7 @@ export default function UsageChart({ costsData, accentColor = '#00d4aa', gradien
             strokeWidth={2}
             fill={`url(#${gradId})`}
             dot={false}
-            activeDot={{ r: 4, fill: accentColor, stroke: '#0f0f0f', strokeWidth: 2 }}
+            activeDot={{ r: 4, fill: accentColor, stroke: 'var(--bg)', strokeWidth: 2 }}
           />
         </AreaChart>
       </ResponsiveContainer>

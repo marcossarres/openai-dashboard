@@ -8,6 +8,7 @@ import AwsUsageChart from './components/AwsUsageChart.jsx';
 import AwsServiceBreakdown from './components/AwsServiceBreakdown.jsx';
 import ClaudeCostSummary from './components/ClaudeCostSummary.jsx';
 import ApiKeyModal from './components/ApiKeyModal.jsx';
+import { useTheme } from './context/ThemeContext.jsx';
 
 function toDateString(date) {
   return date.toISOString().slice(0, 10);
@@ -22,9 +23,11 @@ function getDefaultRange() {
 
 export default function App() {
   const defaultRange = getDefaultRange();
+  const { dark, toggle } = useTheme();
   const [activeTab, setActiveTab] = useState('openai');
   const [dateRange, setDateRange] = useState(defaultRange);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [openaiKeyPreview, setOpenaiKeyPreview] = useState(null);
   const [claudeStatus, setClaudeStatus] = useState({ hasKey: false, keyPreview: null, hasOrgId: false, orgPreview: null });
 
@@ -140,9 +143,11 @@ export default function App() {
   const handleSync = isOpenAI ? fetchOpenAI : isAWS ? fetchAWS : fetchClaude;
   const accentColor = isOpenAI ? '#00d4aa' : isAWS ? '#f59e0b' : '#8b5cf6';
   const accentDark = isOpenAI ? '#00a882' : isAWS ? '#d97706' : '#7c3aed';
+  const dateInputClass = 'bg-[var(--bg-surface-2)] border border-[var(--border-2)] rounded-md text-[var(--text-1)] px-3 py-1.5 text-sm outline-none cursor-pointer transition-colors focus:border-[var(--text-2)]';
+  const dateInputStyle = { colorScheme: dark ? 'dark' : 'light' };
 
   return (
-    <div className="min-h-screen bg-[#0f0f0f] text-gray-200">
+    <div className="min-h-screen bg-[var(--bg)] text-[var(--text-1)] transition-colors">
       <ApiKeyModal
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}
@@ -153,72 +158,78 @@ export default function App() {
       />
 
       {/* Header */}
-      <header className="bg-[#111] border-b border-[#222] px-10 py-5 flex items-center justify-between flex-wrap gap-4">
+      <header
+        className="border-b border-[var(--border)] px-10 py-5 flex items-center justify-between flex-wrap gap-4"
+        style={{ backgroundColor: dark ? '#040e1d' : '#cbd5e1' }}
+      >
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-[#00d4aa] to-[#00a882] flex items-center justify-center text-[#0f0f0f] font-bold text-base">
             AI
           </div>
           <div>
-            <h1 className="text-white font-semibold text-lg leading-tight tracking-tight m-0">
+            <h1 className="text-[var(--text-1)] font-semibold text-lg leading-tight tracking-tight m-0">
               Marcos Cost Dashboard
             </h1>
-            <p className="text-[#666] text-xs m-0 mt-0.5">Monitor your API spend and consumption</p>
+            <p className="text-[var(--text-3)] text-xs m-0 mt-0.5">Monitor your API spend and consumption</p>
           </div>
         </div>
 
         {/* Spend badge */}
         {isOpenAI && openaiSynced && (account?.name || account?.email || costsData?.total_usage != null) && (
-          <div className="flex items-center gap-4 border-r border-[#2a2a2a] pr-4">
+          <div className="flex items-center gap-4 border-r border-[var(--border)] pr-4">
             {(account?.name || account?.email) && (
               <div className="flex items-center gap-1.5 text-sm">
-                <span className="text-[#555]">User</span>
-                <span className="text-gray-300 font-medium">{account.name || account.email}</span>
+                <span className="text-[var(--text-3)]">User</span>
+                <span className="text-[var(--text-1)] font-medium">{account.name || account.email}</span>
               </div>
             )}
             {costsData?.total_usage != null && (
               <div className="flex items-center gap-1.5 text-sm">
-                <span className="text-[#555]">Spent</span>
+                <span className="text-[var(--text-3)]">Spent</span>
                 <span className="text-[#00d4aa] font-semibold">${(costsData.total_usage / 100).toFixed(2)}</span>
               </div>
             )}
           </div>
         )}
         {isAWS && awsSynced && awsData?.total_cost != null && (
-          <div className="flex items-center gap-4 border-r border-[#2a2a2a] pr-4">
+          <div className="flex items-center gap-4 border-r border-[var(--border)] pr-4">
             <div className="flex items-center gap-1.5 text-sm">
-              <span className="text-[#555]">AWS Spent</span>
+              <span className="text-[var(--text-3)]">AWS Spent</span>
               <span className="text-[#f59e0b] font-semibold">${(awsData.total_cost / 100).toFixed(2)}</span>
             </div>
           </div>
         )}
         {isClaude && claudeSynced && claudeData?.total_cost != null && (
-          <div className="flex items-center gap-4 border-r border-[#2a2a2a] pr-4">
+          <div className="flex items-center gap-4 border-r border-[var(--border)] pr-4">
             <div className="flex items-center gap-1.5 text-sm">
-              <span className="text-[#555]">Claude Spent</span>
+              <span className="text-[var(--text-3)]">Claude Spent</span>
               <span className="text-[#c4b5fd] font-semibold">${(claudeData.total_cost / 100).toFixed(2)}</span>
             </div>
           </div>
         )}
 
         <div className="flex items-center gap-3 flex-wrap">
-          <span className="text-[#888] text-sm">From</span>
+          <span className="text-[var(--text-2)] text-sm">From</span>
           <input
             type="date"
-            className="bg-[#1c1c1c] border border-[#333] rounded-md text-gray-200 px-3 py-1.5 text-sm outline-none cursor-pointer [color-scheme:dark]"
+            className={dateInputClass}
+            style={dateInputStyle}
             value={dateRange.start}
             max={dateRange.end}
             onChange={(e) => handleDateChange('start', e.target.value)}
           />
-          <span className="text-[#888] text-sm">to</span>
+          <span className="text-[var(--text-2)] text-sm">to</span>
           <input
             type="date"
-            className="bg-[#1c1c1c] border border-[#333] rounded-md text-gray-200 px-3 py-1.5 text-sm outline-none cursor-pointer [color-scheme:dark]"
+            className={dateInputClass}
+            style={dateInputStyle}
             value={dateRange.end}
             min={dateRange.start}
             max={toDateString(new Date())}
             onChange={(e) => handleDateChange('end', e.target.value)}
           />
           <button
+            type="button"
             onClick={handleSync}
             disabled={loading}
             style={{ background: `linear-gradient(to right, ${accentColor}, ${accentDark})` }}
@@ -227,47 +238,87 @@ export default function App() {
             {loading ? 'Syncing…' : 'Sync'}
           </button>
           <button
+            type="button"
+            onClick={toggle}
+            title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+            aria-label={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+            aria-pressed={dark}
+            className={`transition-colors text-lg leading-none p-2 rounded-full border ${
+              dark ? 'bg-[var(--bg-surface-3)]' : 'bg-[var(--bg-surface-2)]'
+            } border-[var(--border)] text-[var(--text-2)] hover:text-[var(--text-1)] hover:bg-[var(--bg-surface-3)]`}
+          >
+            {dark ? '☀️' : '🌙'}
+          </button>
+          <button
+            type="button"
             onClick={() => setSettingsOpen(true)}
             title="Settings"
-            className="text-[#555] hover:text-[#00d4aa] transition-colors p-1.5 rounded-md hover:bg-[#1a1a1a] text-lg leading-none"
+            className="text-[var(--text-3)] hover:text-[#00d4aa] transition-colors p-1.5 rounded-md hover:bg-[var(--bg-surface-2)] text-lg leading-none"
           >
             ⚙
           </button>
         </div>
       </header>
 
-      {/* Provider tabs */}
-      <div className="bg-[#111] border-b border-[#1a1a1a] px-10">
-        <div className="flex max-w-6xl mx-auto">
-          <button
-            onClick={() => setActiveTab('openai')}
-            className={`px-6 py-3.5 text-sm font-medium border-b-2 transition-colors ${
-              isOpenAI ? 'text-[#00d4aa] border-[#00d4aa]' : 'text-[#555] border-transparent hover:text-gray-300'
-            }`}
-          >
-            OpenAI
-          </button>
-          <button
-            onClick={() => setActiveTab('aws')}
-            className={`px-6 py-3.5 text-sm font-medium border-b-2 transition-colors ${
-              isAWS ? 'text-[#f59e0b] border-[#f59e0b]' : 'text-[#555] border-transparent hover:text-gray-300'
-            }`}
-          >
-            AWS
-          </button>
-          <button
-            onClick={() => setActiveTab('claude')}
-            className={`px-6 py-3.5 text-sm font-medium border-b-2 transition-colors ${
-              isClaude ? 'text-[#c084fc] border-[#c084fc]' : 'text-[#555] border-transparent hover:text-gray-300'
-            }`}
-          >
-            Claude
-          </button>
-        </div>
-      </div>
+      {/* Body: sidebar + main */}
+      <div className="flex min-h-[calc(100vh-73px)]">
 
-      {/* Main */}
-      <main className="max-w-6xl mx-auto px-10 py-8">
+        {/* Sidebar */}
+        <aside
+          className={`shrink-0 flex flex-col transition-all duration-200 overflow-hidden border-r ${
+            sidebarOpen ? 'w-52' : 'w-12'
+          }`}
+          style={{
+            background: dark
+              ? 'linear-gradient(to bottom, #040e1d, #1a3f72)'
+              : 'linear-gradient(to bottom, #cbd5e1, #ffffff)',
+            borderColor: dark ? '#1a3456' : '#d1d5db',
+          }}
+        >
+          {/* Collapse toggle */}
+          <div className="flex items-center justify-end px-2 py-3 border-b" style={{ borderColor: dark ? '#1a3456' : '#d1d5db' }}>
+            <button
+              onClick={() => setSidebarOpen((o) => !o)}
+              title={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
+              className="text-[#9ca3af] hover:text-[#374151] dark:text-[#4a7fa8] dark:hover:text-[#93c5fd] hover:bg-[rgba(0,0,0,0.06)] dark:hover:bg-[rgba(255,255,255,0.07)] rounded-md p-1.5 transition-colors text-base leading-none"
+            >
+              {sidebarOpen ? '‹' : '›'}
+            </button>
+          </div>
+
+          {/* Nav items */}
+          <nav className="flex flex-col gap-1 p-2 flex-1">
+            {[
+              { id: 'openai', label: 'OpenAI', icon: '◎', accent: '#00d4aa', activeBgLight: 'rgba(0,0,0,0.06)',   activeBgDark: 'rgba(100,180,255,0.12)' },
+              { id: 'aws',    label: 'AWS',    icon: '☁', accent: '#f59e0b', activeBgLight: 'rgba(0,0,0,0.06)',   activeBgDark: 'rgba(100,180,255,0.12)' },
+              { id: 'claude', label: 'Claude', icon: '✦', accent: '#c084fc', activeBgLight: 'rgba(0,0,0,0.06)',   activeBgDark: 'rgba(100,180,255,0.12)' },
+            ].map(({ id, label, icon, accent, activeBgLight, activeBgDark }) => {
+              const active = activeTab === id;
+              const activeBg = dark ? activeBgDark : activeBgLight;
+              return (
+                <button
+                  key={id}
+                  onClick={() => setActiveTab(id)}
+                  title={!sidebarOpen ? label : undefined}
+                  className={`flex items-center gap-3 px-2 py-2.5 rounded-lg text-sm font-medium transition-colors text-left w-full border-l-2 ${
+                    active
+                      ? 'text-[#111827] dark:text-[#e0f0ff]'
+                      : 'border-transparent text-[#6b7280] dark:text-[#4a7fa8] hover:text-[#111827] dark:hover:text-[#93c5fd] hover:bg-[rgba(0,0,0,0.06)] dark:hover:bg-[rgba(255,255,255,0.07)]'
+                  }`}
+                  style={active ? { borderColor: accent, background: activeBg } : {}}
+                >
+                  <span className="shrink-0 text-base w-5 text-center" style={{ color: active ? accent : undefined }}>
+                    {icon}
+                  </span>
+                  {sidebarOpen && <span className="truncate">{label}</span>}
+                </button>
+              );
+            })}
+          </nav>
+        </aside>
+
+        {/* Main */}
+        <main className="flex-1 min-w-0 px-8 py-8">
 
         {/* OpenAI Tab */}
         {isOpenAI && (
@@ -278,16 +329,16 @@ export default function App() {
               </div>
             )}
             {openaiLoading ? (
-              <div className="flex flex-col items-center justify-center py-24 gap-4 text-[#555] text-sm">
-                <div className="w-10 h-10 border-[3px] border-[#222] border-t-[#00d4aa] rounded-full spinner" />
+              <div className="flex flex-col items-center justify-center py-24 gap-4 text-[var(--text-3)] text-sm">
+                <div className="w-10 h-10 border-[3px] border-[var(--border)] border-t-[#00d4aa] rounded-full spinner" />
                 <span>Fetching OpenAI usage data…</span>
               </div>
             ) : !openaiSynced ? (
-              <div className="flex flex-col items-center justify-center py-24 gap-3 text-[#444] text-sm">
+              <div className="flex flex-col items-center justify-center py-24 gap-3 text-[var(--text-2)] text-sm">
                 <span className="text-4xl">📊</span>
                 <p className="m-0">Press <strong className="text-[#00d4aa]">Sync</strong> to load your OpenAI usage data.</p>
                 {openaiKeyPreview
-                  ? <p className="m-0 text-xs text-[#333]">Key: <span className="font-mono text-[#555]">{openaiKeyPreview}</span></p>
+                  ? <p className="m-0 text-xs text-[var(--text-3)]">Key: <span className="font-mono text-[var(--text-2)]">{openaiKeyPreview}</span></p>
                   : <button onClick={() => setSettingsOpen(true)} className="mt-2 text-[#00d4aa] text-xs underline underline-offset-2 hover:opacity-80">No key configured — click to set up</button>
                 }
               </div>
@@ -295,24 +346,24 @@ export default function App() {
               <>
                 {(costsData || subscription) && (
                   <section className="mb-8">
-                    <p className="text-xs font-semibold text-[#555] uppercase tracking-widest mb-3">Summary</p>
+                    <p className="text-xs font-semibold text-[var(--text-3)] uppercase tracking-widest mb-3">Summary</p>
                     <CostSummary subscription={subscription} costsData={costsData} />
                   </section>
                 )}
                 {costsData?.daily_costs?.length > 0 && (
                   <section className="mb-8">
-                    <p className="text-xs font-semibold text-[#555] uppercase tracking-widest mb-3">Daily Cost Over Time</p>
+                    <p className="text-xs font-semibold text-[var(--text-3)] uppercase tracking-widest mb-3">Daily Cost Over Time</p>
                     <UsageChart costsData={costsData} />
                   </section>
                 )}
                 {costsData?.daily_costs?.length > 0 && (
                   <section className="mb-8">
-                    <p className="text-xs font-semibold text-[#555] uppercase tracking-widest mb-3">Cost by Model</p>
+                    <p className="text-xs font-semibold text-[var(--text-3)] uppercase tracking-widest mb-3">Cost by Model</p>
                     <ModelBreakdown costsData={costsData} />
                   </section>
                 )}
                 {openaiSynced && !costsData?.daily_costs?.length && !openaiError && (
-                  <div className="text-center text-[#444] text-sm py-16">No usage data found for the selected period.</div>
+                  <div className="text-center text-[var(--text-2)] text-sm py-16">No usage data found for the selected period.</div>
                 )}
               </>
             )}
@@ -328,15 +379,15 @@ export default function App() {
               </div>
             )}
             {awsLoading ? (
-              <div className="flex flex-col items-center justify-center py-24 gap-4 text-[#555] text-sm">
-                <div className="w-10 h-10 border-[3px] border-[#222] border-t-[#f59e0b] rounded-full spinner" />
+              <div className="flex flex-col items-center justify-center py-24 gap-4 text-[var(--text-3)] text-sm">
+                <div className="w-10 h-10 border-[3px] border-[var(--border)] border-t-[#f59e0b] rounded-full spinner" />
                 <span>Fetching AWS cost data…</span>
               </div>
             ) : !awsSynced ? (
-              <div className="flex flex-col items-center justify-center py-24 gap-3 text-[#444] text-sm">
+              <div className="flex flex-col items-center justify-center py-24 gap-3 text-[var(--text-2)] text-sm">
                 <span className="text-4xl">☁️</span>
                 <p className="m-0">Press <strong className="text-[#f59e0b]">Sync</strong> to load your AWS cost data.</p>
-                <p className="m-0 text-xs text-[#333]">Uses the <span className="font-mono text-[#555]">aws-cloudy</span> profile or configured credentials.</p>
+                <p className="m-0 text-xs text-[var(--text-3)]">Uses the <span className="font-mono text-[var(--text-2)]">aws-cloudy</span> profile or configured credentials.</p>
                 <button onClick={() => setSettingsOpen(true)} className="mt-1 text-[#f59e0b] text-xs underline underline-offset-2 hover:opacity-80">
                   Configure AWS credentials
                 </button>
@@ -345,24 +396,24 @@ export default function App() {
               <>
                 {awsData && (
                   <section className="mb-8">
-                    <p className="text-xs font-semibold text-[#555] uppercase tracking-widest mb-3">Summary</p>
+                    <p className="text-xs font-semibold text-[var(--text-3)] uppercase tracking-widest mb-3">Summary</p>
                     <AwsCostSummary awsData={awsData} />
                   </section>
                 )}
                 {awsData?.daily_costs?.length > 0 && (
                   <section className="mb-8">
-                    <p className="text-xs font-semibold text-[#555] uppercase tracking-widest mb-3">Daily Cost Over Time</p>
+                    <p className="text-xs font-semibold text-[var(--text-3)] uppercase tracking-widest mb-3">Daily Cost Over Time</p>
                     <AwsUsageChart awsData={awsData} />
                   </section>
                 )}
                 {awsData?.daily_costs?.length > 0 && (
                   <section className="mb-8">
-                    <p className="text-xs font-semibold text-[#555] uppercase tracking-widest mb-3">Cost by Service</p>
+                    <p className="text-xs font-semibold text-[var(--text-3)] uppercase tracking-widest mb-3">Cost by Service</p>
                     <AwsServiceBreakdown awsData={awsData} />
                   </section>
                 )}
                 {awsSynced && !awsData?.daily_costs?.length && !awsError && (
-                  <div className="text-center text-[#444] text-sm py-16">No AWS cost data found for the selected period.</div>
+                  <div className="text-center text-[var(--text-2)] text-sm py-16">No AWS cost data found for the selected period.</div>
                 )}
               </>
             )}
@@ -378,16 +429,16 @@ export default function App() {
               </div>
             )}
             {claudeLoading ? (
-              <div className="flex flex-col items-center justify-center py-24 gap-4 text-[#555] text-sm">
-                <div className="w-10 h-10 border-[3px] border-[#222] border-t-[#c084fc] rounded-full spinner" />
+              <div className="flex flex-col items-center justify-center py-24 gap-4 text-[var(--text-3)] text-sm">
+                <div className="w-10 h-10 border-[3px] border-[var(--border)] border-t-[#c084fc] rounded-full spinner" />
                 <span>Fetching Claude cost data…</span>
               </div>
             ) : !claudeSynced ? (
-              <div className="flex flex-col items-center justify-center py-24 gap-3 text-[#444] text-sm">
+              <div className="flex flex-col items-center justify-center py-24 gap-3 text-[var(--text-2)] text-sm">
                 <span className="text-4xl">🤖</span>
                 <p className="m-0">Press <strong className="text-[#c084fc]">Sync</strong> to pull Claude console costs.</p>
                 {claudeStatus?.keyPreview
-                  ? <p className="m-0 text-xs text-[#333]">Key: <span className="font-mono text-[#555]">{claudeStatus.keyPreview}</span></p>
+                  ? <p className="m-0 text-xs text-[var(--text-3)]">Key: <span className="font-mono text-[var(--text-2)]">{claudeStatus.keyPreview}</span></p>
                   : (
                     <button onClick={() => setSettingsOpen(true)} className="mt-2 text-[#c084fc] text-xs underline underline-offset-2 hover:opacity-80">
                       No Claude Admin key configured — click to set up
@@ -398,30 +449,31 @@ export default function App() {
               <>
                 {claudeData && (
                   <section className="mb-8">
-                    <p className="text-xs font-semibold text-[#555] uppercase tracking-widest mb-3">Summary</p>
+                    <p className="text-xs font-semibold text-[var(--text-3)] uppercase tracking-widest mb-3">Summary</p>
                     <ClaudeCostSummary claudeData={claudeData} />
                   </section>
                 )}
                 {claudeData?.daily_costs?.length > 0 && (
                   <section className="mb-8">
-                    <p className="text-xs font-semibold text-[#555] uppercase tracking-widest mb-3">Daily Cost Over Time</p>
+                    <p className="text-xs font-semibold text-[var(--text-3)] uppercase tracking-widest mb-3">Daily Cost Over Time</p>
                     <UsageChart costsData={claudeData} accentColor="#c084fc" gradientId="claude" />
                   </section>
                 )}
                 {claudeData?.daily_costs?.length > 0 && (
                   <section className="mb-8">
-                    <p className="text-xs font-semibold text-[#555] uppercase tracking-widest mb-3">Cost by Line Item</p>
+                    <p className="text-xs font-semibold text-[var(--text-3)] uppercase tracking-widest mb-3">Cost by Line Item</p>
                     <ModelBreakdown costsData={claudeData} accentColor="#c084fc" />
                   </section>
                 )}
                 {claudeSynced && !claudeData?.daily_costs?.length && !claudeError && (
-                  <div className="text-center text-[#444] text-sm py-16">No Claude billing data found for the selected period.</div>
+                  <div className="text-center text-[var(--text-2)] text-sm py-16">No Claude billing data found for the selected period.</div>
                 )}
               </>
             )}
           </>
         )}
       </main>
+      </div>
     </div>
   );
 }

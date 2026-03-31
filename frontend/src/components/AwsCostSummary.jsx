@@ -32,17 +32,17 @@ export default function AwsCostSummary({ awsData }) {
       {cards.map(({ label, value, sub, accent }) => (
         <div
           key={label}
-          className={`rounded-xl border p-5 ${
+          className={`rounded-xl border p-5 transition-colors ${
             accent
-              ? 'bg-gradient-to-br from-[#2a1a00] to-[#141414] border-[#4a3000]'
-              : 'bg-[#141414] border-[#222]'
+              ? 'bg-gradient-to-br from-[#fff4e2] to-[#fff9f0] border-[#f7d7a5] dark:from-[#2a1a00] dark:to-[#141414] dark:border-[#4a3000]'
+              : 'bg-[var(--bg-surface-2)] border-[var(--border)]'
           }`}
         >
-          <p className="text-xs font-semibold text-[#555] uppercase tracking-wider mb-2.5">{label}</p>
-          <p className={`text-3xl font-bold tracking-tight leading-none ${accent ? 'text-[#f59e0b]' : 'text-white'}`}>
+          <p className="text-xs font-semibold text-[var(--text-3)] uppercase tracking-wider mb-2.5">{label}</p>
+          <p className={`text-3xl font-bold tracking-tight leading-none ${accent ? 'text-[#f59e0b]' : 'text-[var(--text-1)]'}`}>
             {value}
           </p>
-          <p className="text-xs text-[#444] mt-1.5">{sub}</p>
+          <p className="text-xs text-[var(--text-2)] mt-1.5">{sub}</p>
         </div>
       ))}
     </div>
