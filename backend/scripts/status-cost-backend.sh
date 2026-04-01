@@ -378,35 +378,52 @@ report_ecs_cluster() {
 }
 
 report_ecs_service() {
-  if [[ -z "${ECS_CLUSTER_NAME}" || -z "${ECS_SERVICE_NAME}" ]]; then
-    component_status "ECS" "ECS service (${ECS_SERVICE_NAME:-n/a})" "not created" "Cluster/service name unavailable." ""
+  if [[ -z "${ECS_CLUSTER_NAME}" ]]; then
+    component_status "ECS" "ECS services" "not created" "Cluster name unavailable." ""
     return
   fi
 
-  local info
-  info=$(aws_cli ecs describe-services --cluster "${ECS_CLUSTER_NAME}" --services "${ECS_SERVICE_NAME}" \
-    --query 'services[0].[status,desiredCount,runningCount,pendingCount,deployments[0].rolloutState]' \
-    --output text 2>/dev/null || echo "MISSING")
+  # List all services in the cluster
+  local arns
+  arns=$(aws_cli ecs list-services --cluster "${ECS_CLUSTER_NAME}" \
+    --query 'serviceArns' --output text 2>/dev/null || echo "")
 
-  if [[ "${info}" == "MISSING" || "${info}" == "None" ]]; then
-    component_status "ECS" "ECS service (${ECS_SERVICE_NAME})" "not created" "${ECS_SERVICE_NAME} not found in cluster ${ECS_CLUSTER_NAME}." "MISSING"
+  if [[ -z "${arns}" || "${arns}" == "None" ]]; then
+    component_status "ECS" "ECS services (${ECS_CLUSTER_NAME})" "not created" "No services found in cluster ${ECS_CLUSTER_NAME}." "MISSING"
     return
   fi
 
-  IFS=$'\t' read -r status desired running pending rollout <<<"${info}"
-  local state
-  if [[ "${status}" != "ACTIVE" ]]; then
-    state=$(classify_simple_state "${status}")
-  elif [[ "${running}" == "${desired}" && "${pending}" == "0" && "${rollout}" == "COMPLETED" ]]; then
-    state="working"
-  else
-    state="instaling"
+  # describe-services accepts up to 10 ARNs at once
+  local service_list
+  IFS=$'\t' read -r -a service_list <<< "${arns}"
+
+  local infos
+  infos=$(aws_cli ecs describe-services --cluster "${ECS_CLUSTER_NAME}" \
+    --services "${service_list[@]}" \
+    --query 'services[].[serviceName,status,desiredCount,runningCount,pendingCount,deployments[0].rolloutState]' \
+    --output text 2>/dev/null || echo "")
+
+  if [[ -z "${infos}" ]]; then
+    component_status "ECS" "ECS services (${ECS_CLUSTER_NAME})" "not created" "Could not describe services in ${ECS_CLUSTER_NAME}." "MISSING"
+    return
   fi
-  local details="status=${status}, desired=${desired}, running=${running}, pending=${pending}, rollout=${rollout:-n/a}"
-  if [[ "${state}" == "working" && -n "${ALB_DNS_NAME}" ]]; then
-    details+=", alb_domain=${ALB_DNS_NAME}"
-  fi
-  component_status "ECS" "ECS service (${ECS_SERVICE_NAME})" "${state}" "${details}" "${status}"
+
+  while IFS=$'\t' read -r svc_name status desired running pending rollout; do
+    [[ -z "${svc_name}" ]] && continue
+    local state
+    if [[ "${status}" != "ACTIVE" ]]; then
+      state=$(classify_simple_state "${status}")
+    elif [[ "${running}" == "${desired}" && "${pending}" == "0" && "${rollout}" == "COMPLETED" ]]; then
+      state="working"
+    else
+      state="instaling"
+    fi
+    local details="status=${status}, desired=${desired}, running=${running}, pending=${pending}, rollout=${rollout:-n/a}"
+    if [[ "${state}" == "working" && -n "${ALB_DNS_NAME}" ]]; then
+      details+=", alb_domain=${ALB_DNS_NAME}"
+    fi
+    component_status "ECS" "ECS service (${svc_name})" "${state}" "${details}" "${status}"
+  done <<< "${infos}"
 }
 
 report_asg() {

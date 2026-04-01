@@ -22,8 +22,8 @@
 
 set -euo pipefail
 
-log() { printf '[deploy-stack] %s\n' "$*"; }
-log_progress() { printf '[progress] %-45s -> %s (%s)\n' "$1" "$2" "$3"; }
+log() { printf '[deploy-stack] %s\n' "$*" >&2; }
+log_progress() { printf '[progress] %-45s -> %s (%s)\n' "$1" "$2" "$3" >&2; }
 
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
