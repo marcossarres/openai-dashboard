@@ -21,6 +21,27 @@ dotenv.config({ path: ENV_PATH });
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const allowAllOrigins = allowedOrigins.includes('*');
+const corsMethods = (process.env.CORS_METHODS || 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
+  .split(',')
+  .map((method) => method.trim().toUpperCase())
+  .filter(Boolean);
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin || allowAllOrigins || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('Not allowed by CORS'));
+  },
+  methods: corsMethods,
+  credentials: true,
+};
+
 // Mutable key — can be updated at runtime via /api/config/key
 let apiKey = process.env.OPENAI_API_KEY || '';
 
@@ -154,7 +175,7 @@ const swaggerSpec = swaggerJsdoc({
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 
-app.use(cors({ origin: 'http://localhost:5173', methods: ['GET', 'POST'] }));
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
