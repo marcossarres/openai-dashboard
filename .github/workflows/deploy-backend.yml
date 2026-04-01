@@ -4,12 +4,23 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'backend/**'
+      - '.github/workflows/deploy-backend.yml'
   workflow_dispatch:
+    inputs:
+      projectname:
+        description: 'Project name (e.g. newsite)'
+        required: true
+        default: 'openai-dashboard'
+      domain:
+        description: 'Domain (e.g. moneyclip.com.br)'
+        required: true
+        default: 'moneyclip.com.br'
 
 env:
   AWS_REGION: us-east-1
   ECR_REGISTRY: 915759771410.dkr.ecr.us-east-1.amazonaws.com
-  ECR_REPOSITORY: openai-dashboard-backend
 
 jobs:
   build-and-push:
@@ -18,6 +29,13 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+
+      - name: Resolve ECR repository name
+        id: ecr
+        run: |
+          PROJECT="${{ inputs.projectname || 'openai-dashboard' }}"
+          DOMAIN_SLUG=$(echo "${{ inputs.domain || 'moneyclip.com.br' }}" | tr '.' '-')
+          echo "repo=${PROJECT}-${DOMAIN_SLUG}-ecr" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -28,8 +46,8 @@ jobs:
 
       - name: Ensure ECR repository exists
         run: |
-          aws ecr describe-repositories --repository-names $ECR_REPOSITORY --region $AWS_REGION \
-            || aws ecr create-repository --repository-name $ECR_REPOSITORY --region $AWS_REGION
+          aws ecr describe-repositories --repository-names ${{ steps.ecr.outputs.repo }} --region $AWS_REGION \
+            || aws ecr create-repository --repository-name ${{ steps.ecr.outputs.repo }} --region $AWS_REGION
 
       - name: Log in to Amazon ECR
         run: |
@@ -38,11 +56,12 @@ jobs:
 
       - name: Build and push Docker image
         run: |
+          REPO=${{ steps.ecr.outputs.repo }}
           TAG=${{ github.sha }}
           docker build \
             --platform linux/amd64 \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:$TAG \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            -t $ECR_REGISTRY/$REPO:$TAG \
+            -t $ECR_REGISTRY/$REPO:latest \
             ./backend
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$REPO:$TAG
+          docker push $ECR_REGISTRY/$REPO:latest
