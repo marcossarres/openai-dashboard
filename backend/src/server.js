@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
+import { createRequire } from 'module';
 import express from 'express';
 import cors from 'cors';
 import axios from 'axios';
@@ -9,7 +10,8 @@ import swaggerUi from 'swagger-ui-express';
 import { CostExplorerClient, GetCostAndUsageCommand } from '@aws-sdk/client-cost-explorer';
 import { fromIni } from '@aws-sdk/credential-providers';
 import { SecretsManagerClient, GetSecretValueCommand, PutSecretValueCommand } from '@aws-sdk/client-secrets-manager';
-import pkg from '../package.json' assert { type: 'json' };
+const require = createRequire(import.meta.url);
+const pkg = require('../package.json');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
