@@ -8,10 +8,19 @@ on:
       - 'frontend/**'
       - '.github/workflows/deploy-frontend.yml'
   workflow_dispatch:
+    inputs:
+      projectname:
+        description: 'Project name (e.g. newsite)'
+        required: true
+        default: 'openai-dashboard'
+      domain:
+        description: 'Domain (e.g. moneyclip.com.br)'
+        required: true
+        default: 'moneyclip.com.br'
 
 env:
   AWS_REGION: us-east-1
-  S3_BUCKET: test.moneyclip.com.br
+  S3_BUCKET: ${{ format('{0}.{1}', github.event.inputs.projectname || 'openai-dashboard', github.event.inputs.domain || 'moneyclip.com.br') }}
 
 jobs:
   deploy-frontend:
