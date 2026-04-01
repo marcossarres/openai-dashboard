@@ -33,8 +33,10 @@ export function setApiBaseUrl(url) {
     const normalized = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
     localStorage.setItem('apiBaseUrl', normalized);
     applyBaseUrl(normalized);
+    return normalized;
   } else {
     localStorage.removeItem('apiBaseUrl');
     applyBaseUrl('');
+    return '';
   }
 }

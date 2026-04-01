@@ -9,6 +9,7 @@ import swaggerUi from 'swagger-ui-express';
 import { CostExplorerClient, GetCostAndUsageCommand } from '@aws-sdk/client-cost-explorer';
 import { fromIni } from '@aws-sdk/credential-providers';
 import { SecretsManagerClient, GetSecretValueCommand, PutSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import pkg from '../package.json' assert { type: 'json' };
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -20,6 +21,7 @@ dotenv.config({ path: ENV_PATH });
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const API_VERSION = pkg.version || 'unknown';
 
 const allowedOrigins = (process.env.CORS_ORIGINS || '*')
   .split(',')
@@ -560,7 +562,7 @@ app.get('/api/aws/costs', async (req, res, next) => {
 // ── Health check ─────────────────────────────────────────────────────────────
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, timestamp: Date.now() });
+  res.json({ ok: true, version: API_VERSION, timestamp: Date.now() });
 });
 
 // ── Error handling ────────────────────────────────────────────────────────────

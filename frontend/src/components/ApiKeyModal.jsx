@@ -291,21 +291,45 @@ function AwsTab({ onClose }) {
 
 function ConnectionTab({ onClose }) {
   const [url, setUrl] = useState(getApiBaseUrl);
-  const [saved, setSaved] = useState(false);
+  const [statusMessage, setStatusMessage] = useState(null);
+  const [healthInfo, setHealthInfo] = useState(null);
+  const [healthError, setHealthError] = useState(null);
+  const [checking, setChecking] = useState(false);
 
-  function handleSave(e) {
+  async function verifyBaseUrl(nextValue) {
+    const label = nextValue || 'Dashboard proxy (relative)';
+    setStatusMessage(`Testing ${label}…`);
+    setHealthInfo(null);
+    setHealthError(null);
+    setChecking(true);
+    try {
+      const { data } = await apiClient.get('/health', { timeout: 5000 });
+      setHealthInfo({
+        baseLabel: label,
+        version: data?.version || 'unknown',
+        timestamp: data?.timestamp || Date.now(),
+      });
+      setStatusMessage(`Connected to ${label}`);
+    } catch (err) {
+      setHealthError(err.response?.data?.error || err.message || 'Unable to reach /health.');
+      setStatusMessage(`Saved ${label}, but the health check failed.`);
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  const handleSave = async (e) => {
     e.preventDefault();
-    setApiBaseUrl(url);
-    setSaved(true);
-    setTimeout(onClose, 1000);
-  }
+    const normalized = setApiBaseUrl(url);
+    setUrl(normalized);
+    await verifyBaseUrl(normalized);
+  };
 
-  function handleClear() {
-    setUrl('');
-    setApiBaseUrl('');
-    setSaved(true);
-    setTimeout(onClose, 1000);
-  }
+  const handleClear = async () => {
+    const normalized = setApiBaseUrl('');
+    setUrl(normalized);
+    await verifyBaseUrl(normalized);
+  };
 
   return (
     <form onSubmit={handleSave} className="px-6 py-5 flex flex-col gap-4">
@@ -314,7 +338,7 @@ function ConnectionTab({ onClose }) {
         <input
           type="text"
           value={url}
-          onChange={(e) => { setUrl(e.target.value); setSaved(false); }}
+          onChange={(e) => { setUrl(e.target.value); setStatusMessage(null); setHealthInfo(null); setHealthError(null); }}
           placeholder="http://localhost:3001"
           className="w-full bg-[var(--bg-surface-3)] border border-[var(--border-2)] focus:border-[var(--text-2)] rounded-lg px-4 py-2.5 text-sm text-[var(--text-1)] font-mono outline-none transition-colors"
           autoFocus
@@ -324,17 +348,52 @@ function ConnectionTab({ onClose }) {
         </p>
       </div>
 
-      {saved && <div className="bg-emerald-950 border border-emerald-800 rounded-lg px-4 py-2.5 text-emerald-400 text-sm">Saved!</div>}
+      {statusMessage && (
+        <div className="bg-[var(--bg-surface-2)] border border-[var(--border)] rounded-lg px-4 py-2 text-sm text-[var(--text-2)] flex items-center justify-between gap-2">
+          <span>{statusMessage}</span>
+          {checking && <span className="text-[var(--text-3)] text-xs">Checking…</span>}
+        </div>
+      )}
+
+      {healthInfo && (
+        <div className="bg-[var(--bg-surface-2)] border border-[var(--border)] rounded-lg px-4 py-3 text-sm flex flex-col gap-1">
+          <div className="flex items-center justify-between text-xs text-[var(--text-2)]">
+            <span>Base</span>
+            <span className="font-mono text-[var(--text-1)]">{healthInfo.baseLabel}</span>
+          </div>
+          <div className="flex items-center justify-between text-xs text-[var(--text-2)]">
+            <span>API version</span>
+            <span className="font-mono text-[var(--text-1)]">{healthInfo.version}</span>
+          </div>
+          <div className="flex items-center justify-between text-xs text-[var(--text-2)]">
+            <span>Last check</span>
+            <span className="text-[var(--text-1)]">{new Date(healthInfo.timestamp).toLocaleString()}</span>
+          </div>
+        </div>
+      )}
+
+      {healthError && (
+        <div className="bg-red-950 border border-red-800 rounded-lg px-4 py-2.5 text-sm text-red-400">{healthError}</div>
+      )}
 
       <div className="flex gap-3 pt-1">
-        <button type="button" onClick={handleClear} className="bg-[var(--bg-surface-3)] border border-[var(--border-2)] text-[var(--text-3)] hover:text-[var(--text-1)] rounded-lg py-2.5 text-sm transition-colors px-4">
+        <button
+          type="button"
+          onClick={handleClear}
+          disabled={checking}
+          className="bg-[var(--bg-surface-3)] border border-[var(--border-2)] text-[var(--text-3)] hover:text-[var(--text-1)] rounded-lg py-2.5 text-sm transition-colors px-4 disabled:opacity-60 disabled:cursor-not-allowed"
+        >
           Reset
         </button>
         <button type="button" onClick={onClose} className="flex-1 bg-[var(--bg-surface-3)] border border-[var(--border-2)] text-[var(--text-2)] hover:text-[var(--text-1)] rounded-lg py-2.5 text-sm transition-colors">
           Cancel
         </button>
-        <button type="submit" className="flex-1 bg-[var(--bg-surface-3)] hover:bg-[var(--bg-surface-2)] text-[var(--text-1)] font-semibold rounded-lg py-2.5 text-sm transition-colors">
-          Save
+        <button
+          type="submit"
+          disabled={checking}
+          className="flex-1 bg-[var(--bg-surface-3)] hover:bg-[var(--bg-surface-2)] text-[var(--text-1)] font-semibold rounded-lg py-2.5 text-sm transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          {checking ? 'Testing…' : 'Save & Test'}
         </button>
       </div>
     </form>
