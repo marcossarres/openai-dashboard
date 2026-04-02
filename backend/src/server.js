@@ -8,6 +8,17 @@ import dotenv from 'dotenv';
 import swaggerJsdoc from 'swagger-jsdoc';
 import swaggerUi from 'swagger-ui-express';
 import { CostExplorerClient, GetCostAndUsageCommand } from '@aws-sdk/client-cost-explorer';
+import { CloudFormationClient, ListStacksCommand } from '@aws-sdk/client-cloudformation';
+import { ECSClient, ListClustersCommand, DescribeClustersCommand, ListServicesCommand, DescribeServicesCommand } from '@aws-sdk/client-ecs';
+import { AutoScalingClient, DescribeAutoScalingGroupsCommand } from '@aws-sdk/client-auto-scaling';
+import { ElasticLoadBalancingV2Client, DescribeLoadBalancersCommand, DescribeTargetGroupsCommand, DescribeTargetHealthCommand } from '@aws-sdk/client-elastic-load-balancing-v2';
+import { CloudWatchLogsClient, DescribeLogGroupsCommand } from '@aws-sdk/client-cloudwatch-logs';
+import { ECRClient, DescribeRepositoriesCommand } from '@aws-sdk/client-ecr';
+import { S3Client, ListBucketsCommand } from '@aws-sdk/client-s3';
+import { CloudFrontClient, ListDistributionsCommand } from '@aws-sdk/client-cloudfront';
+import { Route53Client, ListHostedZonesCommand, ListResourceRecordSetsCommand } from '@aws-sdk/client-route-53';
+import { ACMClient, ListCertificatesCommand } from '@aws-sdk/client-acm';
+import { EC2Client, DescribeSecurityGroupsCommand } from '@aws-sdk/client-ec2';
 import { fromIni } from '@aws-sdk/credential-providers';
 import { SecretsManagerClient, GetSecretValueCommand, PutSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 const require = createRequire(import.meta.url);
@@ -55,6 +66,19 @@ let awsSecretAccessKey = process.env.AWS_SECRET_ACCESS_KEY || '';
 let awsRegion = process.env.AWS_REGION || 'us-east-1';
 const awsProfile = process.env.AWS_PROFILE || 'aws-cloudy';
 
+let claudeApiKey = process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY || '';
+let claudeOrgId = process.env.CLAUDE_ORG_ID || process.env.ANTHROPIC_ORG_ID || '';
+const CLAUDE_API_VERSION = process.env.CLAUDE_API_VERSION || '2023-06-01';
+const CLAUDE_USER_AGENT = process.env.CLAUDE_USER_AGENT || 'MarcosCostDashboard/1.0.0';
+const CLAUDE_COST_ENDPOINT = 'https://api.anthropic.com/v1/organizations/cost_report';
+
+const AWS_PROJECT_NAME = process.env.AWS_PROJECT_NAME || 'newsite';
+const AWS_ROOT_DOMAIN = process.env.AWS_ROOT_DOMAIN || 'moneyclip.com.br';
+const AWS_DOMAIN_SLUG = AWS_ROOT_DOMAIN.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '');
+const AWS_RESOURCE_PREFIX = process.env.AWS_RESOURCE_PREFIX || `${AWS_PROJECT_NAME}-${AWS_DOMAIN_SLUG}`;
+const AWS_STACK_NAME = process.env.AWS_STACK_NAME || `${AWS_RESOURCE_PREFIX}-cloud-formation`;
+
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function openaiHeaders() {
@@ -76,6 +100,379 @@ function maskAwsKey(key) {
   return key.slice(0, 4) + '...' + key.slice(-4);
 }
 
+function maskClaudeOrg(orgId) {
+  if (!orgId) return null;
+  if (orgId.length <= 8) return orgId;
+  return `${orgId.slice(0, 4)}...${orgId.slice(-4)}`;
+}
+
+function claudeHeaders() {
+  if (!claudeApiKey) {
+    throw new Error('Claude Admin API key is not configured. Use the Settings panel to add your key.');
+  }
+  const headers = {
+    'x-api-key': claudeApiKey,
+    'anthropic-version': CLAUDE_API_VERSION,
+    'user-agent': CLAUDE_USER_AGENT,
+  };
+  if (claudeOrgId) headers['anthropic-org-id'] = claudeOrgId;
+  return headers;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function parseDateInput(value) {
+  if (!value || typeof value !== 'string') return null;
+  const iso = `${value}T00:00:00Z`;
+  const timestamp = Date.parse(iso);
+  if (Number.isNaN(timestamp)) return null;
+  return new Date(iso);
+}
+
+function toClaudeIso(dateStr, { end = false } = {}) {
+  const base = parseDateInput(dateStr);
+  if (!base) return null;
+  if (end) base.setUTCDate(base.getUTCDate() + 1);
+  return base.toISOString();
+}
+
+function resolveClaudeDateRange(startStr, endStr) {
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  const defaultStart = new Date(today.getTime() - 30 * DAY_MS);
+
+  const startDateObj = parseDateInput(startStr) || defaultStart;
+  const endDateObj = parseDateInput(endStr) || today;
+
+  if (startDateObj > endDateObj) {
+    throw new Error('start_date must be on or before end_date.');
+  }
+
+  const startDate = startDateObj.toISOString().slice(0, 10);
+  const endDate = endDateObj.toISOString().slice(0, 10);
+  const startIso = toClaudeIso(startDate);
+  const endIso = toClaudeIso(endDate, { end: true });
+
+  return { startDate, endDate, startIso, endIso };
+}
+
+function isoToUnixSeconds(value) {
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) return Math.floor(Date.now() / 1000);
+  return Math.floor(timestamp / 1000);
+}
+
+function claudeAmountToCents(amount) {
+  if (!amount) return 0;
+  const numeric = Number(amount);
+  if (Number.isNaN(numeric)) return 0;
+  return Math.round(numeric);
+}
+
+function claudeParamsSerializer(params) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    if (Array.isArray(value)) {
+      value.forEach((entry) => {
+        if (entry !== undefined && entry !== null && entry !== '') {
+          search.append(key, entry);
+        }
+      });
+    } else {
+      search.append(key, value);
+    }
+  });
+  return search.toString();
+}
+
+async function fetchClaudeCostBuckets(startIso, endIso) {
+  const headers = claudeHeaders();
+  const baseParams = {
+    starting_at: startIso,
+    ending_at: endIso,
+    bucket_width: '1d',
+    'group_by[]': ['description'],
+  };
+
+  const buckets = [];
+  let pageToken;
+  do {
+    const response = await axios.get(CLAUDE_COST_ENDPOINT, {
+      headers,
+      params: { ...baseParams, page: pageToken || undefined },
+      paramsSerializer: claudeParamsSerializer,
+    });
+    const payload = response.data || {};
+    if (Array.isArray(payload.data)) {
+      buckets.push(...payload.data);
+    }
+    pageToken = payload.has_more ? payload.next_page : null;
+  } while (pageToken);
+
+  return buckets;
+}
+
+function chunkArray(list, size = 10) {
+  if (!Array.isArray(list) || size <= 0) return [];
+  const chunks = [];
+  for (let i = 0; i < list.length; i += size) {
+    chunks.push(list.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function getShortId(identifier = '') {
+  if (!identifier) return '';
+  if (identifier.includes('/')) return identifier.split('/').pop();
+  if (identifier.includes(':')) return identifier.split(':').pop();
+  return identifier;
+}
+
+async function fetchAwsServiceInventory() {
+  const awsConfig = getAwsClientConfig();
+  const results = await Promise.allSettled([
+    scanCfnStacks(awsConfig),
+    scanEcsResources(awsConfig),
+    scanAsgGroups(awsConfig),
+    scanLoadBalancers(awsConfig),
+    scanTargetGroups(awsConfig),
+    scanLogGroups(awsConfig),
+    scanEcrRepos(awsConfig),
+    scanS3Buckets(awsConfig),
+    scanCloudfrontDistributions(awsConfig),
+    scanRoute53Aliases(awsConfig),
+    scanAcmCertificates(awsConfig),
+    scanWebSecurityGroups(awsConfig),
+  ]);
+  return results.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
+}
+
+async function scanCfnStacks(awsConfig) {
+  const client = new CloudFormationClient(awsConfig);
+  const items = [];
+  let nextToken;
+  do {
+    const resp = await client.send(new ListStacksCommand({
+      StackStatusFilter: ['CREATE_COMPLETE', 'UPDATE_COMPLETE', 'UPDATE_ROLLBACK_COMPLETE', 'ROLLBACK_COMPLETE', 'CREATE_ROLLBACK_COMPLETE'],
+      NextToken: nextToken,
+    }));
+    for (const stack of resp.StackSummaries || []) {
+      items.push({ serviceType: 'CFN', component: `CloudFormation stack (${stack.StackName})`, status: stack.StackStatus });
+    }
+    nextToken = resp.NextToken;
+  } while (nextToken);
+  return items;
+}
+
+async function scanEcsResources(awsConfig) {
+  const client = new ECSClient(awsConfig);
+  const clusterArns = [];
+  let nextToken;
+  do {
+    const resp = await client.send(new ListClustersCommand({ nextToken }));
+    clusterArns.push(...(resp.clusterArns || []));
+    nextToken = resp.nextToken;
+  } while (nextToken);
+  if (!clusterArns.length) return [];
+
+  const items = [];
+  const clustersResp = await client.send(new DescribeClustersCommand({ clusters: clusterArns }));
+  for (const cluster of clustersResp.clusters || []) {
+    items.push({ serviceType: 'ECS', component: `ECS cluster (${cluster.clusterName})`, status: cluster.status || 'UNKNOWN' });
+    const serviceArns = [];
+    let svcToken;
+    do {
+      const svcResp = await client.send(new ListServicesCommand({ cluster: cluster.clusterArn, nextToken: svcToken }));
+      serviceArns.push(...(svcResp.serviceArns || []));
+      svcToken = svcResp.nextToken;
+    } while (svcToken);
+    for (const chunk of chunkArray(serviceArns, 10)) {
+      const svcDesc = await client.send(new DescribeServicesCommand({ cluster: cluster.clusterArn, services: chunk }));
+      for (const svc of svcDesc.services || []) {
+        items.push({ serviceType: 'ECS', component: `ECS service (${svc.serviceName})`, status: svc.status || 'UNKNOWN' });
+      }
+    }
+  }
+  return items;
+}
+
+async function scanAsgGroups(awsConfig) {
+  const client = new AutoScalingClient(awsConfig);
+  const items = [];
+  let nextToken;
+  do {
+    const resp = await client.send(new DescribeAutoScalingGroupsCommand({ NextToken: nextToken }));
+    for (const group of resp.AutoScalingGroups || []) {
+      const desired = group.DesiredCapacity ?? 0;
+      const inService = (group.Instances || []).filter((i) => i.LifecycleState === 'InService').length;
+      items.push({ serviceType: 'ASG', component: `ECS AutoScaling (${group.AutoScalingGroupName})`, status: `${inService}/${desired}` });
+    }
+    nextToken = resp.NextToken;
+  } while (nextToken);
+  return items;
+}
+
+async function scanLoadBalancers(awsConfig) {
+  const client = new ElasticLoadBalancingV2Client(awsConfig);
+  const items = [];
+  let marker;
+  do {
+    const resp = await client.send(new DescribeLoadBalancersCommand({ Marker: marker }));
+    for (const lb of resp.LoadBalancers || []) {
+      items.push({ serviceType: 'ALB', component: `Application Load Balancer (${lb.LoadBalancerName})`, status: lb.State?.Code || 'UNKNOWN' });
+    }
+    marker = resp.NextMarker;
+  } while (marker);
+  return items;
+}
+
+async function scanTargetGroups(awsConfig) {
+  const client = new ElasticLoadBalancingV2Client(awsConfig);
+  const items = [];
+  let marker;
+  do {
+    const resp = await client.send(new DescribeTargetGroupsCommand({ Marker: marker }));
+    for (const tg of resp.TargetGroups || []) {
+      try {
+        const health = await client.send(new DescribeTargetHealthCommand({ TargetGroupArn: tg.TargetGroupArn }));
+        const descs = health.TargetHealthDescriptions || [];
+        const total = descs.length;
+        const healthy = descs.filter((d) => d.TargetHealth?.State === 'healthy').length;
+        const status = !total ? 'empty' : healthy === total ? 'healthy' : `${healthy}/${total} healthy`;
+        items.push({ serviceType: 'ALB', component: `ALB target group (${tg.TargetGroupName})`, status });
+      } catch {
+        items.push({ serviceType: 'ALB', component: `ALB target group (${tg.TargetGroupName})`, status: 'UNKNOWN' });
+      }
+    }
+    marker = resp.NextMarker;
+  } while (marker);
+  return items;
+}
+
+async function scanLogGroups(awsConfig) {
+  const client = new CloudWatchLogsClient(awsConfig);
+  const items = [];
+  let nextToken;
+  do {
+    const resp = await client.send(new DescribeLogGroupsCommand({ nextToken }));
+    for (const group of resp.logGroups || []) {
+      items.push({ serviceType: 'CWL', component: `CloudWatch Logs (${group.logGroupName})`, status: 'EXISTS' });
+    }
+    nextToken = resp.nextToken;
+  } while (nextToken);
+  return items;
+}
+
+async function scanEcrRepos(awsConfig) {
+  const client = new ECRClient(awsConfig);
+  const items = [];
+  let nextToken;
+  do {
+    const resp = await client.send(new DescribeRepositoriesCommand({ nextToken }));
+    for (const repo of resp.repositories || []) {
+      items.push({ serviceType: 'ECR', component: `ECR repository (${repo.repositoryName})`, status: 'AVAILABLE' });
+    }
+    nextToken = resp.nextToken;
+  } while (nextToken);
+  return items;
+}
+
+async function scanS3Buckets(awsConfig) {
+  const client = new S3Client(awsConfig);
+  const resp = await client.send(new ListBucketsCommand({}));
+  return (resp.Buckets || []).map((b) => ({
+    serviceType: 'S3',
+    component: `Frontend bucket (s3://${b.Name})`,
+    status: 'AVAILABLE',
+  }));
+}
+
+async function scanCloudfrontDistributions(awsConfig) {
+  const client = new CloudFrontClient({ ...awsConfig, region: 'us-east-1' });
+  const items = [];
+  let marker;
+  do {
+    const resp = await client.send(new ListDistributionsCommand({ Marker: marker }));
+    const list = resp.DistributionList;
+    for (const dist of list?.Items || []) {
+      const alias = dist.Aliases?.Items?.[0] || dist.DomainName || dist.Id;
+      items.push({ serviceType: 'CFD', component: `CloudFront (${alias})`, status: dist.Status || 'UNKNOWN' });
+    }
+    marker = list?.IsTruncated ? list.NextMarker : undefined;
+  } while (marker);
+  return items;
+}
+
+async function scanRoute53Aliases(awsConfig) {
+  const client = new Route53Client({ ...awsConfig, region: 'us-east-1' });
+  const zones = [];
+  let marker;
+  do {
+    const resp = await client.send(new ListHostedZonesCommand({ Marker: marker }));
+    zones.push(...(resp.HostedZones || []));
+    marker = resp.IsTruncated ? resp.NextMarker : undefined;
+  } while (marker);
+
+  const items = [];
+  for (const zone of zones) {
+    let rrMarker;
+    do {
+      const resp = await client.send(new ListResourceRecordSetsCommand({ HostedZoneId: zone.Id, StartRecordIdentifier: rrMarker }));
+      for (const rr of resp.ResourceRecordSets || []) {
+        if (rr.AliasTarget) {
+          const domain = rr.Name.replace(/\.$/, '');
+          items.push({ serviceType: 'R53', component: `Route 53 alias (${domain})`, status: 'ALIAS_SET' });
+        }
+      }
+      rrMarker = resp.IsTruncated ? resp.NextRecordIdentifier : undefined;
+    } while (rrMarker);
+  }
+  return items;
+}
+
+async function scanAcmCertificates(awsConfig) {
+  const client = new ACMClient(awsConfig);
+  const items = [];
+  let nextToken;
+  do {
+    const resp = await client.send(new ListCertificatesCommand({ NextToken: nextToken }));
+    for (const cert of resp.CertificateSummaryList || []) {
+      items.push({
+        serviceType: 'ACM',
+        component: `ACM certificate (${cert.DomainName || getShortId(cert.CertificateArn)})`,
+        status: cert.Status || 'UNKNOWN',
+      });
+    }
+    nextToken = resp.NextToken;
+  } while (nextToken);
+  return items;
+}
+
+async function scanWebSecurityGroups(awsConfig) {
+  const client = new EC2Client(awsConfig);
+  const items = [];
+  let nextToken;
+  do {
+    const resp = await client.send(new DescribeSecurityGroupsCommand({
+      Filters: [{ Name: 'ip-permission.from-port', Values: ['443', '80'] }],
+      NextToken: nextToken,
+    }));
+    for (const group of resp.SecurityGroups || []) {
+      const httpsRule = (group.IpPermissions || []).some(
+        (perm) => perm.IpProtocol === 'tcp' && (perm.FromPort ?? 0) <= 443 && (perm.ToPort ?? 0) >= 443,
+      );
+      items.push({
+        serviceType: 'SG',
+        component: `ALB security group (${group.GroupId})`,
+        status: httpsRule ? 'HTTPS_ENABLED' : 'NO_HTTPS_RULE',
+      });
+    }
+    nextToken = resp.NextToken;
+  } while (nextToken);
+  return items;
+}
+
 const credentialsSecretId = process.env.CREDENTIALS_SECRET_ID || 'sarrescost/backend/credentials';
 const secretsClientRegion = process.env.AWS_REGION || 'us-east-1';
 const secretsClient = credentialsSecretId ? new SecretsManagerClient({ region: secretsClientRegion }) : null;
@@ -85,6 +482,8 @@ function applyCredentials(payload = {}) {
   if (payload.awsAccessKeyId !== undefined) awsAccessKeyId = payload.awsAccessKeyId;
   if (payload.awsSecretAccessKey !== undefined) awsSecretAccessKey = payload.awsSecretAccessKey;
   if (payload.awsRegion) awsRegion = payload.awsRegion;
+  if (payload.claudeApiKey !== undefined) claudeApiKey = payload.claudeApiKey;
+  if (payload.claudeOrgId !== undefined) claudeOrgId = payload.claudeOrgId;
 }
 
 function extractSecretString(data) {
@@ -113,6 +512,8 @@ async function persistCredentialsToSecret(updates = {}) {
     awsAccessKeyId: updates.awsAccessKeyId ?? awsAccessKeyId,
     awsSecretAccessKey: updates.awsSecretAccessKey ?? awsSecretAccessKey,
     awsRegion: updates.awsRegion ?? awsRegion,
+    claudeApiKey: updates.claudeApiKey ?? claudeApiKey,
+    claudeOrgId: updates.claudeOrgId ?? claudeOrgId,
   };
   await secretsClient.send(new PutSecretValueCommand({
     SecretId: credentialsSecretId,
@@ -257,6 +658,42 @@ app.post('/api/config/key', async (req, res) => {
     return res.status(500).json({ error: 'Unable to store key. Please try again.' });
   }
   res.json({ ok: true, keyPreview: maskKey(trimmed) });
+});
+
+// ── Claude config routes ─────────────────────────────────────────────────────
+
+app.get('/api/claude/config/status', (_req, res) => {
+  res.json({
+    hasKey: Boolean(claudeApiKey),
+    keyPreview: maskKey(claudeApiKey),
+    hasOrgId: Boolean(claudeOrgId),
+    orgPreview: maskClaudeOrg(claudeOrgId),
+  });
+});
+
+app.post('/api/claude/config/key', async (req, res) => {
+  const { key, orgId } = req.body || {};
+  if (!key || typeof key !== 'string' || !key.trim()) {
+    return res.status(400).json({ error: 'key is required' });
+  }
+  if (orgId !== undefined && orgId !== null && typeof orgId !== 'string') {
+    return res.status(400).json({ error: 'orgId must be a string if provided' });
+  }
+  const updates = {
+    claudeApiKey: key.trim(),
+    claudeOrgId: orgId?.trim() || '',
+  };
+  try {
+    await persistCredentialsToSecret(updates);
+  } catch (err) {
+    console.error('[claude config] Failed to store Claude credentials:', err.message);
+    return res.status(500).json({ error: 'Unable to store Claude credentials. Please try again.' });
+  }
+  res.json({
+    ok: true,
+    keyPreview: maskKey(claudeApiKey),
+    orgPreview: claudeOrgId ? maskClaudeOrg(claudeOrgId) : null,
+  });
 });
 
 // ── Data routes ───────────────────────────────────────────────────────────────
@@ -559,6 +996,63 @@ app.get('/api/aws/costs', async (req, res, next) => {
 
     res.json({ total_cost: totalCents, daily_costs });
   } catch (err) { next(err); }
+});
+
+app.get('/api/aws/services', async (_req, res, next) => {
+  try {
+    const items = await fetchAwsServiceInventory();
+    res.json({ items });
+  } catch (err) {
+    if (err.message && err.message.includes('CloudFormation stack')) {
+      return res.status(400).json({ error: err.message });
+    }
+    next(err);
+  }
+});
+
+// ── Claude routes ───────────────────────────────────────────────────────────
+
+app.get('/api/claude/costs', async (req, res, next) => {
+  try {
+    if (!claudeApiKey) {
+      return res.status(400).json({ error: 'Claude Admin API key is not configured. Use the Settings modal to add your key.' });
+    }
+    const { startIso, endIso } = resolveClaudeDateRange(req.query.start_date, req.query.end_date);
+    const buckets = await fetchClaudeCostBuckets(startIso, endIso);
+
+    let totalCents = 0;
+    const daily_costs = buckets.map((bucket) => {
+      const timestamp = isoToUnixSeconds(bucket.starting_at);
+      const line_items = (bucket.results || []).map((item) => {
+        const cost = claudeAmountToCents(item.amount);
+        totalCents += cost;
+        return {
+          name: item.description || item.model || item.cost_type || 'Unknown',
+          cost,
+          currency: item.currency || 'USD',
+          model: item.model || null,
+          cost_type: item.cost_type || null,
+          workspace_id: item.workspace_id || null,
+        };
+      }).filter((entry) => entry.cost > 0);
+      return { timestamp, line_items };
+    }).filter((day) => day.line_items.length > 0);
+
+    res.json({ total_cost: totalCents, daily_costs });
+  } catch (err) {
+    if (err.message === 'start_date must be on or before end_date.') {
+      return res.status(400).json({ error: err.message });
+    }
+    if (err.response) {
+      const status = err.response.status || 502;
+      const message = err.response.data?.error?.message
+        || err.response.data?.error
+        || err.response.data?.message
+        || 'Claude API error';
+      return res.status(status).json({ error: message });
+    }
+    next(err);
+  }
 });
 
 // ── Health check ─────────────────────────────────────────────────────────────

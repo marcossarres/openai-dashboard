@@ -6,6 +6,7 @@ import ModelBreakdown from './components/ModelBreakdown.jsx';
 import AwsCostSummary from './components/AwsCostSummary.jsx';
 import AwsUsageChart from './components/AwsUsageChart.jsx';
 import AwsServiceBreakdown from './components/AwsServiceBreakdown.jsx';
+import AwsResourceList from './components/AwsResourceList.jsx';
 import ClaudeCostSummary from './components/ClaudeCostSummary.jsx';
 import ApiKeyModal from './components/ApiKeyModal.jsx';
 import { useTheme } from './context/ThemeContext.jsx';
@@ -44,6 +45,8 @@ export default function App() {
   const [awsLoading, setAwsLoading] = useState(false);
   const [awsError, setAwsError] = useState(null);
   const [awsSynced, setAwsSynced] = useState(false);
+  const [awsServices, setAwsServices] = useState([]);
+  const [awsServicesError, setAwsServicesError] = useState(null);
 
   // Claude state
   const [claudeData, setClaudeData] = useState(null);
@@ -105,13 +108,22 @@ export default function App() {
   const fetchAWS = useCallback(async () => {
     setAwsLoading(true);
     setAwsError(null);
+    setAwsServicesError(null);
     try {
       const params = { start_date: dateRange.start, end_date: dateRange.end };
-      const res = await apiClient.get('/api/aws/costs', { params });
-      setAwsData(res.data);
+      const [costsRes, servicesRes] = await Promise.all([
+        apiClient.get('/api/aws/costs', { params }),
+        apiClient.get('/api/aws/services').catch((err) => {
+          setAwsServicesError(err.response?.data?.error || err.message || 'Failed to load deployed services.');
+          return { data: { items: [] } };
+        }),
+      ]);
+      setAwsData(costsRes.data);
+      setAwsServices(servicesRes.data?.items || []);
       setAwsSynced(true);
     } catch (err) {
       setAwsError(err.response?.data?.error || err.message || 'Failed to fetch AWS cost data.');
+      setAwsServices([]);
     } finally {
       setAwsLoading(false);
     }
@@ -415,6 +427,18 @@ export default function App() {
                 {awsSynced && !awsData?.daily_costs?.length && !awsError && (
                   <div className="text-center text-[var(--text-2)] text-sm py-16">No AWS cost data found for the selected period.</div>
                 )}
+                <section className="mb-8">
+                  <p className="text-xs font-semibold text-[var(--text-3)] uppercase tracking-widest mb-3">Deployed Services</p>
+                  {awsServicesError ? (
+                    <div className="bg-amber-950 border border-amber-700 rounded-lg px-5 py-4 text-amber-300 text-sm flex gap-2 items-start">
+                      <span className="font-semibold shrink-0">Services unavailable:</span><span>{awsServicesError}</span>
+                    </div>
+                  ) : awsServices.length > 0 ? (
+                    <AwsResourceList items={awsServices} />
+                  ) : (
+                    <div className="text-[var(--text-2)] text-sm">No deployed services found.</div>
+                  )}
+                </section>
               </>
             )}
           </>
